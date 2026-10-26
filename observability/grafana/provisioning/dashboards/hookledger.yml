@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: hookledger
+    orgId: 1
+    folder: hookledger
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

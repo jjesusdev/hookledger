@@ -1,0 +1,56 @@
+groups:
+  - name: hookledger-slo
+    interval: 30s
+    rules:
+      - alert: HookledgerTargetDown
+        expr: up{job="hookledger"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "hookledger no responde a Prometheus"
+          description: "El scrape de la instancia lleva más de un minuto fallando."
+
+      - alert: HookledgerOutboxBacklog
+        expr: hookledger_outbox_pending > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backlog de outbox por encima de 100 filas"
+          description: "El outbox no está drenando al ritmo de la ingesta."
+
+      - alert: HookledgerOutboxStalled
+        expr: hookledger_outbox_oldest_age_seconds > 60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "La fila más vieja del outbox supera los 60 segundos"
+          description: "Hay filas pendientes que deberían haberse publicado hace más de un minuto."
+
+      - alert: HookledgerDeliveryFailureRate
+        expr: |
+          sum(rate(hookledger_delivery_total{result="failed"}[5m]))
+          /
+          clamp_min(sum(rate(hookledger_delivery_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Más del 5% de las entregas terminan en FAILED"
+          description: "El target o el payload están fallando de forma sostenida; revisar la DLQ."
+
+      - alert: HookledgerIngest5xx
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri="/v1/events", status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_server_requests_seconds_count{uri="/v1/events"}[5m])), 0.001)
+          > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Más del 1% de las peticiones de ingesta devuelven 5xx"
+          description: "La API de ingesta está fallando; revisar PostgreSQL y logs de la app."

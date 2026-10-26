@@ -136,6 +136,48 @@ curl -s localhost:8080/actuator/prometheus | grep '^hookledger'
 | `hookledger_delivery_total{result="retry"}` | counter | fallos que vuelven a la cola |
 | `hookledger_delivery_total{result="failed"}` | counter | eventos que agotaron intentos y van a la DLQ |
 | `hookledger_replay_total` | counter | mensajes movidos de la DLQ a la cola principal |
+| `hookledger_outbox_pending` | gauge | filas sin publicar; se consulta al scrapear |
+| `hookledger_outbox_oldest_age_seconds` | gauge | edad de la fila pendiente más antigua |
+| `http_server_requests_seconds_bucket` | histogram | latencia HTTP; alimenta p95/p99 en Grafana |
+
+### Dashboard y alertas
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+```
+
+| Servicio | URL | Notas |
+|---|---|---|
+| Prometheus | http://localhost:9090 | scrape cada 10 s a `app:8080/actuator/prometheus` |
+| Grafana | http://localhost:3000 | `admin` / `admin`; también permite lectura anónima |
+
+El dashboard `hookledger-overview` (uid `hookledger-overview`) se aprovisiona desde
+`observability/grafana/dashboards/hookledger.json`. Muestra ingesta por resultado, entregas y replays,
+backlog y edad del outbox, p95/p99 de ingesta, tasa de 5xx y heap de la JVM.
+
+Alertas en `observability/prometheus/alerts.yml`:
+
+| Alerta | Condición | Para |
+|---|---|---|
+| `HookledgerTargetDown` | `up{job="hookledger"} == 0` | 1 min |
+| `HookledgerOutboxBacklog` | `hookledger_outbox_pending > 100` | 5 min |
+| `HookledgerOutboxStalled` | `hookledger_outbox_oldest_age_seconds > 60` | 2 min |
+| `HookledgerDeliveryFailureRate` | más de 5% de entregas en `failed` | 5 min |
+| `HookledgerIngest5xx` | más de 1% de 5xx en `/v1/events` | 5 min |
+
+Validar las reglas antes de tocar el stack:
+
+```bash
+docker run --rm -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
+  -w /etc/prometheus prom/prometheus:v3.15.1 promtool check config prometheus.yml
+docker run --rm -v "$PWD/observability/prometheus:/etc/prometheus:ro" \
+  -w /etc/prometheus prom/prometheus:v3.15.1 promtool test rules alerts.test.yml
+```
+
+Limitación explícita: **no hay Alertmanager**. Las reglas se evalúan y se ven en Prometheus
+(`/alerts`) y Grafana, pero no envían notificaciones. El job `observability-smoke` de CI valida que las
+reglas carguen y que las métricas `hookledger_*` se scrapeen; el envío real queda para cuando exista un
+destino (email, Slack o PagerDuty) y un lugar donde correrlo.
 
 ## 4. Enviar un evento a mano
 

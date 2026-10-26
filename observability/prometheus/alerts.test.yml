@@ -1,0 +1,71 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hookledger"}'
+        values: '1 1 1 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HookledgerTargetDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HookledgerTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: hookledger
+            exp_annotations:
+              summary: "hookledger no responde a Prometheus"
+              description: "El scrape de la instancia lleva más de un minuto fallando."
+
+  - interval: 1m
+    input_series:
+      - series: 'hookledger_outbox_pending'
+        values: '0+0x4 150+0x10'
+      - series: 'hookledger_outbox_oldest_age_seconds'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HookledgerOutboxBacklog
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HookledgerOutboxBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Backlog de outbox por encima de 100 filas"
+              description: "El outbox no está drenando al ritmo de la ingesta."
+
+  - interval: 1m
+    input_series:
+      - series: 'hookledger_outbox_oldest_age_seconds'
+        values: '0+0x3 120+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HookledgerOutboxStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "La fila más vieja del outbox supera los 60 segundos"
+              description: "Hay filas pendientes que deberían haberse publicado hace más de un minuto."
+
+  - interval: 1m
+    input_series:
+      - series: 'hookledger_delivery_total{result="failed"}'
+        values: '0+6x14'
+      - series: 'hookledger_delivery_total{result="delivered"}'
+        values: '0+94x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HookledgerDeliveryFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Más del 5% de las entregas terminan en FAILED"
+              description: "El target o el payload están fallando de forma sostenida; revisar la DLQ."

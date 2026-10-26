@@ -30,6 +30,13 @@ management:
     web:
       exposure:
         include: health,info,prometheus,metrics
+  metrics:
+    distribution:
+      # Needed for histogram_quantile() in Grafana and for the latency SLO alert.
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 50ms,100ms,250ms,500ms,1s
   endpoint:
     health:
       show-details: always

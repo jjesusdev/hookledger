@@ -32,3 +32,11 @@ load:
 		-e BASE_URL=$${BASE_URL:-http://localhost:8080} \
 		-e RATE=$${RATE:-50} -e DURATION=$${DURATION:-30s} \
 		grafana/k6:2.3.0 run /load/ingest.js
+
+obs:
+	docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+	@echo "Grafana:    http://localhost:3000 (admin/admin)"
+	@echo "Prometheus: http://localhost:9090"
+
+obs-down:
+	docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v

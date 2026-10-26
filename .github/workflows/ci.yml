@@ -425,6 +425,125 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  observability-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      COMPOSE_FILES: -f docker-compose.yml -f docker-compose.observability.yml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate the Prometheus config and the alert rules
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
+            -w /etc/prometheus prom/prometheus:v3.15.1 \
+            promtool check config prometheus.yml
+          docker run --rm -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
+            -w /etc/prometheus prom/prometheus:v3.15.1 \
+            promtool test rules alerts.test.yml
+      - name: Start the stack with Prometheus and Grafana
+        run: docker compose ${COMPOSE_FILES} up -d --build
+      - name: Wait for the app, Prometheus and Grafana
+        run: |
+          set -euo pipefail
+          wait_for() {
+            local name="$1" url="$2"
+            for attempt in $(seq 1 90); do
+              if curl -fsS "${url}" >/dev/null 2>&1; then
+                echo "${name} ready after ${attempt} attempts"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "${name} did not become ready"
+            docker compose ${COMPOSE_FILES} logs --no-color
+            exit 1
+          }
+          wait_for "app" "http://localhost:8080/actuator/health"
+          wait_for "prometheus" "http://localhost:9090/-/ready"
+          wait_for "grafana" "http://localhost:3000/api/health"
+      - name: Generate traffic and verify the scraped metrics
+        run: |
+          set -euo pipefail
+          EVENT_ID=obs-1 ./scripts/send-event.sh
+          EVENT_ID=obs-1 ./scripts/send-event.sh
+
+          for attempt in $(seq 1 60); do
+            accepted="$(curl -fsS -G --data-urlencode 'query=hookledger_ingest_total{result="accepted"}' \
+              http://localhost:9090/api/v1/query | jq -r '.data.result[0].value[1] // "0"')"
+            duplicate="$(curl -fsS -G --data-urlencode 'query=hookledger_ingest_total{result="duplicate"}' \
+              http://localhost:9090/api/v1/query | jq -r '.data.result[0].value[1] // "0"')"
+            if [ "${accepted}" -ge 1 ] && [ "${duplicate}" -ge 1 ]; then
+              echo "ingest counters scraped: accepted=${accepted} duplicate=${duplicate}"
+              break
+            fi
+            sleep 2
+          done
+          [ "${accepted}" -ge 1 ] && [ "${duplicate}" -ge 1 ]
+
+          for attempt in $(seq 1 60); do
+            pending="$(curl -fsS -G --data-urlencode 'query=hookledger_outbox_pending' \
+              http://localhost:9090/api/v1/query | jq -r '.data.result[0].value[1] // "999"')"
+            if [ "${pending}" = "0" ]; then
+              echo "outbox gauge scraped at 0"
+              break
+            fi
+            sleep 2
+          done
+          [ "${pending}" = "0" ]
+
+          names="$(curl -fsS -G --data-urlencode 'query={__name__=~"hookledger_.*"}' \
+            http://localhost:9090/api/v1/query | jq -r '[.data.result[].metric.__name__] | unique[]')"
+          echo "${names}"
+          for expected in hookledger_ingest_total hookledger_delivery_total \
+            hookledger_replay_total hookledger_outbox_pending \
+            hookledger_outbox_oldest_age_seconds; do
+            echo "${names}" | grep -qx "${expected}" || {
+              echo "missing metric ${expected}"
+              exit 1
+            }
+          done
+      - name: Verify the alert rules are loaded
+        run: |
+          set -euo pipefail
+          rules="$(curl -fsS http://localhost:9090/api/v1/rules)"
+          echo "${rules}" | jq -r '.data.groups[].rules[].name'
+          echo "${rules}" | jq -e '
+            [.data.groups[].rules[].name]
+            | (index("HookledgerTargetDown") != null)
+              and (index("HookledgerOutboxBacklog") != null)
+              and (index("HookledgerOutboxStalled") != null)
+              and (index("HookledgerDeliveryFailureRate") != null)
+              and (index("HookledgerIngest5xx") != null)
+          ' >/dev/null
+      - name: Verify Grafana serves the provisioned dashboard
+        run: |
+          set -euo pipefail
+          dashboard=""
+          for attempt in $(seq 1 60); do
+            dashboard="$(curl -fsS -u admin:admin \
+              http://localhost:3000/api/dashboards/uid/hookledger-overview || true)"
+            if [ -n "${dashboard}" ] \
+              && echo "${dashboard}" | jq -e '.dashboard.panels | length >= 10' >/dev/null 2>&1; then
+              echo "dashboard ready after ${attempt} attempts"
+              break
+            fi
+            sleep 2
+          done
+          echo "${dashboard}" | jq -e '.dashboard.title | test("hookledger")' >/dev/null
+          echo "${dashboard}" | jq -e '.dashboard.panels | length >= 10' >/dev/null
+
+          curl -fsS -u admin:admin \
+            http://localhost:3000/api/datasources/uid/prometheus/health \
+            | jq -e '.status == "OK"' >/dev/null
+          echo "Grafana datasource and dashboard are healthy"
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILES} logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILES} down -v
+
   terraform:
     runs-on: ubuntu-24.04
     defaults:

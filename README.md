@@ -9,9 +9,10 @@ Plataforma de ingesta y entrega confiable de webhooks: valida la firma, deduplic
 publica por un outbox transaccional. Diseñada para el caso aburrido y caro: el proveedor reintenta,
 el consumidor se cae y nadie sabe qué evento se perdió.
 
-> **Estado: Semana 2 de 3.** Ingesta HMAC, idempotencia atómica, outbox transaccional, publisher
-> SQS, worker con retries/backoff, DLQ, replay admin y Terraform validado. El camino completo está
-> probado contra LocalStack en CI. k3s, Grafana y la demo pública llegan en la Semana 3.
+> **Estado: Semana 3 en curso.** Ingesta HMAC, idempotencia atómica, outbox transaccional, publisher
+> SQS, worker con retries/backoff, DLQ, replay admin, Terraform validado, Prometheus + Grafana con
+> alertas SLO y prueba de carga k6. El camino completo está probado contra LocalStack en CI. k3s y la
+> demo pública siguen pendientes.
 
 **Resumen en español:** recibe webhooks de terceros, rechaza firmas inválidas, evita procesar dos
 veces el mismo evento y garantiza que el evento y su mensaje saliente se escriban en la misma
@@ -45,6 +46,7 @@ Integrar pagos, WhatsApp, ERP o GitHub termina siempre en el mismo código frág
 - DLQ nativa de SQS después de 3 intentos; replay autenticado de la DLQ a la cola principal.
 - Intentos de entrega persistidos y consultables por evento.
 - Métricas de ingesta, outbox y entrega; salud del backlog en `/actuator/health`.
+- Prometheus + Grafana con dashboard provisionado y cinco alertas SLO.
 - Terraform para colas, DLQ, política IAM y alarmas de CloudWatch (validado, no aplicado).
 - Endpoint de demo para generar 100 eventos con 10% de duplicados.
 
@@ -151,6 +153,18 @@ curl -s localhost:8080/actuator/health | jq
 curl -s localhost:8080/actuator/prometheus | grep hookledger
 ```
 
+Dashboard local, con Prometheus y Grafana:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+# Grafana:    http://localhost:3000  (admin / admin)
+# Prometheus: http://localhost:9090
+```
+
+El dashboard `hookledger-overview` se aprovisiona desde el repo: ingesta por resultado, entregas,
+replays, backlog y edad del outbox, p95/p99 de ingesta, 5xx y heap. Las alertas viven en
+`observability/prometheus/alerts.yml`; se validan con `promtool` en el job `observability-smoke`.
+
 ### Tests
 
 No necesitas Docker: los tests levantan PostgreSQL embebido.
@@ -222,8 +236,8 @@ Otras decisiones deliberadas:
 - **At-least-once, no “exactly-once”.** El consumidor debe ser idempotente; el outbox puede duplicar
   si el proceso muere entre publicar y hacer commit, y SQS puede reentregar si el worker muere entre
   entregar y borrar. Eso se documenta y se prueba, no se esconde.
-- **Sin UI todavía.** Primero la corrección; la página de demo y el dashboard llegan cuando los
-  números existan.
+- **Dashboard sin stack de logging.** Prometheus + Grafana alcanzan para las señales de este servicio;
+  Loki/ELK agregarían operación sin una pregunta que responder todavía.
 
 ## Evidencia
 
@@ -239,6 +253,7 @@ Otras decisiones deliberadas:
 | DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
 | Worker caído | job `worker-down-smoke` en CI | evento `PUBLISHED` esperando en SQS; al volver el worker, `DELIVERED` sin pérdida |
 | Carga de ingesta | job `load-smoke` en CI | 50 eventos/s por 30 s, mediana ~1,7 ms, 0 fallos, outbox drenado |
+| Métricas y dashboard | job `observability-smoke` en CI | `promtool test rules` verde, gauges `hookledger_*` scrapeados, dashboard servido por Grafana |
 | Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
@@ -250,7 +265,8 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 - [x] Semana 2 (extra) — DLQ + replay y worker caído end-to-end en CI; la demo pública queda pendiente de hosting.
 - [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
 - [x] Semana 3 (parcial) — k6 a 50 eventos/s, mediana ~1,7 ms y 0 fallos.
-- [ ] Semana 3 (resto) — chaos de PostgreSQL, Grafana, alertas SLO, demo pública.
+- [x] Semana 3 (parcial) — Prometheus + Grafana, dashboard provisionado y alertas SLO validadas con `promtool`.
+- [ ] Semana 3 (resto) — k3s/GHCR, chaos de PostgreSQL, demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 
 ## Seguridad
