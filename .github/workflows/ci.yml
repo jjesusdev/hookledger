@@ -44,3 +44,54 @@ jobs:
           context: .
           push: false
           tags: hookledger:ci
+
+  compose-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack
+        run: docker compose up -d --build
+      - name: Wait for health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "healthy after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not become healthy"
+          docker compose logs --no-color
+          exit 1
+      - name: Ingest a signed event and its retry
+        run: |
+          set -euo pipefail
+          first="$(./scripts/send-event.sh smoke-1)"
+          echo "first: ${first}"
+          echo "${first}" | grep -q '"duplicate":false'
+
+          retry="$(EVENT_ID=smoke-1 ./scripts/send-event.sh)"
+          echo "retry: ${retry}"
+          echo "${retry}" | grep -q '"duplicate":true'
+
+          for attempt in $(seq 1 30); do
+            stats="$(curl -fsS http://localhost:8080/v1/stats)"
+            if echo "${stats}" | grep -q '"outboxPending":0'; then
+              echo "outbox drained: ${stats}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "outbox did not drain"
+          curl -sS http://localhost:8080/v1/stats
+          docker compose logs --no-color
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
+
