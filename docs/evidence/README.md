@@ -25,7 +25,8 @@ BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40386745826](https://github.com/jjesusdev/hookledger/actions/runs/40386745826), 2026-10-26:
+[40387744478](https://github.com/jjesusdev/hookledger/actions/runs/40387744478), 2026-10-26
+(commit `0f9e03d`):
 
 | Job | Resultado |
 |---|---|
@@ -124,13 +125,14 @@ curl -s "localhost:8080/v1/events/${id}" | jq
 curl -s "localhost:8080/v1/events/${id}/deliveries" | jq
 ```
 
-Salida real de la corrida `40386745826`:
+Salida real de la corrida `40387744478`:
 
 ```json
 {
-  "id": "7dea97f3-e9cc-4a40-9e45-eabd2d7bf0ba",
+  "id": "915002dc-5379-49a9-ac42-2fe763eb32e2",
   "status": "DELIVERED",
-  "publishedAt": "2026-10-26T19:29:39.141838Z"
+  "receivedAt": "2026-10-26T19:36:49.675308Z",
+  "publishedAt": "2026-10-26T19:36:49.852992Z"
 }
 ```
 
