@@ -18,9 +18,14 @@ del proyecto es simple: si un claim no tiene un comando o un test detrás, no va
 ## Resultado
 
 ```
-mvn -B -ntp test
+mvn -B -ntp verify
 Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
 ```
+
+CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Primera
+corrida verde el 2026-10-26: job `test` (tests + artefacto de reportes) y job `build-image` (imagen
+Docker construida, sin push).
 
 | Clase | Tests | Qué cubre |
 |---|---|---|
@@ -101,8 +106,9 @@ script, no la app; la app se valida con los tests de integración.
 
 Esto es tan importante como lo anterior:
 
-- **Dockerfile y `docker compose up`**: no ejecutados en esta máquina porque el engine de Docker no
-  estaba disponible. El CI construye la imagen, pero la primera corrida real del workflow está pendiente.
+- **Dockerfile y `docker compose up`**: el Dockerfile se construye en CI, pero `docker compose up` no se
+  ejecutó en esta máquina porque el engine de Docker no estaba disponible. Falta la primera corrida real
+  end-to-end con Postgres en contenedor.
 - **SQS / DLQ / retries / replay**: no existen aún; el publisher es `LoggingEventPublisher`.
 - **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
 - **Chaos**: matar el worker a mitad de publicación, mensaje veneno, caída de PostgreSQL. Semana 3.
