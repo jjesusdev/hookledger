@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hookledger-config
+  labels:
+    app.kubernetes.io/name: hookledger
+    app.kubernetes.io/part-of: hookledger
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/hookledger
+  DB_USER: hookledger
+  DB_POOL_SIZE: "10"
+  MAX_CLOCK_SKEW_SECONDS: "300"
+  MAX_BODY_BYTES: "200000"
+
+  PUBLISHER: sqs
+  # Replace with the real queue URLs (Terraform output).
+  SQS_QUEUE_URL: https://sqs.us-east-1.amazonaws.com/000000000000/hookledger-events
+  SQS_DLQ_URL: https://sqs.us-east-1.amazonaws.com/000000000000/hookledger-events-dlq
+  AWS_REGION: us-east-1
+
+  OUTBOX_ENABLED: "true"
+  OUTBOX_POLL_INTERVAL_MS: "500"
+  OUTBOX_BATCH_SIZE: "50"
+
+  WORKER_ENABLED: "false"
+  WORKER_WAIT_TIME_SECONDS: "5"
+  WORKER_MAX_MESSAGES: "10"
+  WORKER_MAX_RECEIVES: "3"
+  WORKER_VISIBILITY_TIMEOUT_SECONDS: "30"
+  WORKER_BACKOFF_BASE_SECONDS: "2"
+  WORKER_BACKOFF_MAX_SECONDS: "60"
+
+  # Demo-only target. In a real deployment, point it at the consumer of each source.
+  DEMO_TARGET_URL: https://example.com/webhooks/hookledger
+  DEMO_ENABLED: "false"

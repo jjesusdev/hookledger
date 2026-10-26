@@ -435,12 +435,14 @@ jobs:
       - name: Validate the Prometheus config and the alert rules
         run: |
           set -euo pipefail
-          docker run --rm -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
+          docker run --rm --entrypoint /bin/promtool \
+            -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
             -w /etc/prometheus prom/prometheus:v3.15.1 \
-            promtool check config prometheus.yml
-          docker run --rm -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
+            check config prometheus.yml
+          docker run --rm --entrypoint /bin/promtool \
+            -v "${PWD}/observability/prometheus:/etc/prometheus:ro" \
             -w /etc/prometheus prom/prometheus:v3.15.1 \
-            promtool test rules alerts.test.yml
+            test rules alerts.test.yml
       - name: Start the stack with Prometheus and Grafana
         run: docker compose ${COMPOSE_FILES} up -d --build
       - name: Wait for the app, Prometheus and Grafana
@@ -543,6 +545,22 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose ${COMPOSE_FILES} down -v
+
+  k8s-manifests:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render the manifests
+        run: |
+          set -euo pipefail
+          kubectl kustomize deploy/k8s > /tmp/hookledger.yaml
+          grep -q 'name: hookledger-worker' /tmp/hookledger.yaml
+          grep -q 'kind: PodDisruptionBudget' /tmp/hookledger.yaml
+      - name: Validate with kubeconform
+        run: |
+          docker run --rm -v /tmp:/tmp ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -kubernetes-version 1.32.0 /tmp/hookledger.yaml
 
   terraform:
     runs-on: ubuntu-24.04
