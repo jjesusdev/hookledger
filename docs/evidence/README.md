@@ -25,8 +25,8 @@ BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40393018221](https://github.com/jjesusdev/hookledger/actions/runs/40393018221), 2026-10-26
-(commit `952e935`):
+[40395986091](https://github.com/jjesusdev/hookledger/actions/runs/40395986091), 2026-10-26
+(commit `238108a`):
 
 | Job | Resultado |
 |---|---|
@@ -227,12 +227,13 @@ Job `load-smoke`: k6 envía eventos firmados a 50/s durante 30 s.
 |---|---|---|---|---|---|
 | [40394469526](https://github.com/jjesusdev/hookledger/actions/runs/40394469526) | 1501 | 1,78 ms | 3,06 ms | 45,88 ms | 0 |
 | [40395265099](https://github.com/jjesusdev/hookledger/actions/runs/40395265099) | 1495 | 1,66 ms | 188,85 ms | 553,06 ms | 0 |
+| [40395986091](https://github.com/jjesusdev/hookledger/actions/runs/40395986091) | 1501 | 2,11 ms | 3,85 ms | 50,49 ms | 0 |
 
-En la primera corrida el outbox drenó a 0 con `total=1501`. En la segunda el job falló **solo por el
-umbral de p95** que había quedado demasiado ajustado para un runner compartido; no hubo errores ni
-eventos perdidos. Ambas corridas tienen la misma mediana (~1,7 ms), así que el servicio no cambió: cambió
-la cola de scheduling del runner. El umbral quedó en p95 < 500 ms para detectar regresiones
-catastróficas sin convertir el job en una moneda al aire.
+En la primera y tercera corrida el outbox drenó a 0 con `total=1501`. En la segunda el job falló
+**solo por el umbral de p95** que había quedado demasiado ajustado para un runner compartido; no hubo
+errores ni eventos perdidos. Las tres corridas tienen mediana entre 1,7 y 2,1 ms, así que el servicio no
+cambió: cambió la cola de scheduling del runner. El umbral quedó en p95 < 500 ms para detectar
+regresiones catastróficas sin convertir el job en una moneda al aire.
 
 Condiciones: runner de 4 vCPU, payloads de ~100 B, publisher de log y PostgreSQL en el mismo runner. No
 es un número de producción; es una línea base reproducible. La prueba mide la ingesta y el drenaje del
