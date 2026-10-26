@@ -9,9 +9,9 @@ Plataforma de ingesta y entrega confiable de webhooks: valida la firma, deduplic
 publica por un outbox transaccional. Diseñada para el caso aburrido y caro: el proveedor reintenta,
 el consumidor se cae y nadie sabe qué evento se perdió.
 
-> **Estado: Semana 1 de 3.** Ya existen ingesta HMAC, idempotencia atómica en PostgreSQL y outbox
-> transaccional con tests. El transporte actual es un adaptador de log; SQS + worker + DLQ + replay,
-> k3s y Grafana llegan en las semanas 2–3. No hay demo pública todavía.
+> **Estado: Semana 2 de 3.** Ingesta HMAC, idempotencia atómica, outbox transaccional, publisher
+> SQS, worker con retries/backoff, DLQ, replay admin y Terraform validado. El camino completo está
+> probado contra LocalStack en CI. k3s, Grafana y la demo pública llegan en la Semana 3.
 
 **Resumen en español:** recibe webhooks de terceros, rechaza firmas inválidas, evita procesar dos
 veces el mismo evento y garantiza que el evento y su mensaje saliente se escriban en la misma
@@ -31,7 +31,7 @@ Integrar pagos, WhatsApp, ERP o GitHub termina siempre en el mismo código frág
 
 `hookledger` concentra ese problema en un solo servicio con decisiones explícitas y verificables.
 
-## Qué hace hoy (Semana 1)
+## Qué hace hoy (Semana 2)
 
 - `POST /v1/events` con firma HMAC-SHA256 sobre `timestamp + "." + body`.
 - Ventana de reloj configurable (5 minutos por defecto) para limitar replay.
@@ -40,7 +40,12 @@ Integrar pagos, WhatsApp, ERP o GitHub termina siempre en el mismo código frág
 - Mismo evento y payload distinto → `409 IDEMPOTENCY_CONFLICT`.
 - `webhook_event` y `outbox_event` se escriben en **la misma transacción**.
 - Poller de outbox con `FOR UPDATE SKIP LOCKED` (seguro con múltiples publishers).
-- Estado por evento, métricas de ingesta y salud del backlog en `/actuator/health`.
+- Publisher SQS conmutable por configuración (`hookledger.publisher=sqs`).
+- Worker que consume SQS, entrega por HTTP firmado y reintenta con backoff exponencial.
+- DLQ nativa de SQS después de 3 intentos; replay autenticado de la DLQ a la cola principal.
+- Intentos de entrega persistidos y consultables por evento.
+- Métricas de ingesta, outbox y entrega; salud del backlog en `/actuator/health`.
+- Terraform para colas, DLQ, política IAM y alarmas de CloudWatch (validado, no aplicado).
 - Endpoint de demo para generar 100 eventos con 10% de duplicados.
 
 ## Arquitectura
@@ -53,8 +58,15 @@ proveedor ──HMAC──► POST /v1/events
                                   │
                         OutboxScheduler (FOR UPDATE SKIP LOCKED)
                                   │
-                        EventPublisher ──► log        (semana 1)
-                                       └─► SQS + DLQ  (semana 2)
+                        EventPublisher ──► SQS ──► worker
+                                                │
+                                     HTTP firmado al target
+                                                │
+                                        DELIVERED / retry
+                                                │
+                                     3 fallos ──► DLQ
+                                                │
+                                     replay admin ──► SQS
 ```
 
 **Por qué outbox y no publicar dentro del request:** si publicas a la cola y después falla el commit,
@@ -64,6 +76,9 @@ mensaje no. El outbox elimina el dual-write: PostgreSQL es la fuente de verdad y
 **Por qué `ON CONFLICT` y no `findUnique` + `update`:** dos entregas concurrentes del mismo webhook
 pueden pasar el `SELECT` antes de que cualquiera escriba. La base de datos decide el ganador.
 
+**Por qué el worker no borra el mensaje al fallar:** SQS lo vuelve a entregar y, al superar
+`maxReceiveCount`, lo mueve a la DLQ. El mensaje no se pierde ni se descarta silenciosamente.
+
 ## Quick start
 
 ### Docker Compose
@@ -72,6 +87,26 @@ pueden pasar el `SELECT` antes de que cualquiera escriba. La base de datos decid
 git clone https://github.com/jjesusdev/hookledger.git
 cd hookledger
 docker compose up --build
+```
+
+Ese modo usa el publisher de log: sirve para probar ingesta e idempotencia sin cola.
+
+### Camino completo con SQS (LocalStack)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d
+id="$(./scripts/send-event.sh sqs-1 | jq -r .id)"
+sleep 3
+curl -s "localhost:8080/v1/events/${id}" | jq
+curl -s "localhost:8080/v1/events/${id}/deliveries" | jq
+```
+
+Salida esperada: `status: "DELIVERED"` y un intento con `outcome: "DELIVERED"`. LocalStack crea la
+cola principal y la DLQ con `maxReceiveCount=3`; el worker entrega al receiver de demo con una firma
+propia del target.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
 ```
 
 ### Enviar un evento firmado
@@ -130,10 +165,16 @@ mvn verify
 |---|---|---|
 | `POST` | `/v1/events` | Ingesta firmada e idempotente |
 | `GET` | `/v1/events/{id}` | Estado de un evento |
-| `GET` | `/v1/stats` | Conteos por estado y backlog del outbox |
+| `GET` | `/v1/events/{id}/deliveries` | Intentos de entrega, con código HTTP y error |
+| `GET` | `/v1/stats` | Conteos por estado, backlog e intentos de entrega |
 | `POST` | `/v1/demo/burst?count=100&duplicates=10` | Genera eventos de demo |
+| `POST` | `/v1/demo/receive` | Target de demo; valida la firma del worker |
+| `POST` | `/v1/admin/replay?max=10` | Mueve mensajes de la DLQ a la cola principal |
 | `GET` | `/actuator/health` | Incluye `outbox.pending` y `outbox.oldestAgeSeconds` |
 | `GET` | `/actuator/prometheus` | Métricas Micrometer |
+
+El endpoint de replay exige `X-Admin-Token` y solo existe si `ADMIN_TOKEN` está configurado. No está
+pensado para exponerse sin autenticación fuerte; en la demo usa un token aleatorio.
 
 ### Headers de ingesta
 
@@ -148,38 +189,62 @@ mvn verify
 La firma se compara con `MessageDigest.isEqual` (tiempo constante) y el timestamp debe estar dentro
 de `MAX_CLOCK_SKEW_SECONDS` (300 por defecto).
 
+### Configuración de entrega
+
+| Variable | Default | Uso |
+|---|---|---|
+| `PUBLISHER` | `log` | `log` o `sqs` |
+| `SQS_QUEUE_URL` | vacío | cola principal; obligatoria con `PUBLISHER=sqs` o worker activo |
+| `SQS_DLQ_URL` | vacío | DLQ para replay |
+| `AWS_REGION` | `us-east-1` | región de SQS |
+| `AWS_ENDPOINT_URL` | vacío | override para LocalStack |
+| `WORKER_ENABLED` | `false` | activa el consumidor |
+| `WORKER_MAX_RECEIVES` | `3` | debe coincidir con `maxReceiveCount` de la cola |
+| `DEMO_TARGET_URL` | `http://localhost:8080/v1/demo/receive` | target del worker en la demo |
+| `DEMO_TARGET_SECRET` | `dev-target-secret` | secreto con el que el worker firma al target |
+| `ADMIN_TOKEN` | vacío | habilita `/v1/admin/replay`; vacío = endpoint ausente |
+| `MAX_BODY_BYTES` | `200000` | límite por debajo del máximo de 256 KiB de SQS |
+
+Los secretos reales se inyectan por variables de entorno o un secret manager; no hay secretos en el
+repo.
+
 ## Decisiones de diseño
 
 - [ADR 0001 — Outbox transaccional](docs/adr/0001-transactional-outbox.md)
 - [ADR 0002 — Idempotencia en la base de datos](docs/adr/0002-idempotency-at-the-database.md)
 - [ADR 0003 — HMAC con ventana de timestamp](docs/adr/0003-hmac-timestamp-window.md)
+- [ADR 0004 — SQS con DLQ y worker separado](docs/adr/0004-sqs-dlq-worker.md)
 
 Otras decisiones deliberadas:
 
 - **SQS, no Kafka (todavía).** A decenas de eventos por segundo, Kafka agrega operación sin beneficio.
   El día que haga falta orden por partición o replay masivo, el seam `EventPublisher` permite cambiarlo.
 - **At-least-once, no “exactly-once”.** El consumidor debe ser idempotente; el outbox puede duplicar
-  si el proceso muere entre publicar y hacer commit. Eso se documenta y se prueba, no se esconde.
-- **Sin UI en la Semana 1.** Primero la corrección; la página de demo y el dashboard llegan cuando
-  los números existan.
+  si el proceso muere entre publicar y hacer commit, y SQS puede reentregar si el worker muere entre
+  entregar y borrar. Eso se documenta y se prueba, no se esconde.
+- **Sin UI todavía.** Primero la corrección; la página de demo y el dashboard llegan cuando los
+  números existan.
 
 ## Evidencia
 
 | Claim | Cómo se reproduce | Resultado |
 |---|---|---|
-| Suite verde | `mvn -B -ntp test` | 14 tests, 0 fallos (2026-10-26) |
+| Suite verde | `mvn -B -ntp verify` | 28 tests, 0 fallos (2026-10-26) |
 | Duplicados concurrentes | `HookledgerIntegrationTest.concurrentDuplicatesCreateOneEventAndOneOutboxRow` | 16 requests → 1 evento, 1 outbox |
 | Outbox sin doble claim | `HookledgerIntegrationTest.outboxPublisherClaimsEachRowExactlyOnceUnderConcurrency` | 100 filas, 2 publishers → `attempts = 1` en todas |
 | Demo con duplicados | `HookledgerIntegrationTest.demoBurstReportsAcceptedAndDuplicateEvents` | 20 únicos + 5 duplicados → 20 eventos |
 | Firma inválida | `HookledgerIntegrationTest.invalidSignatureIsRejectedBeforePersisting` | `401`, 0 filas escritas |
 | Stack en contenedores | job `compose-smoke` en CI | health `UP`, evento aceptado, duplicado detectado, outbox en 0 |
+| SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
+| Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 
 ## Roadmap
 
 - [x] Semana 1 — ingesta HMAC, idempotencia, outbox, tests, CI.
-- [ ] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform, k3s, GHCR.
+- [x] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform validado, LocalStack en CI.
+- [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
 - [ ] Semana 3 — k6 10k eventos, chaos (worker kill, duplicados, veneno), Grafana, alertas SLO, demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 
@@ -188,8 +253,11 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 - El secreto de cada fuente se configura por entorno; no hay secretos en el repo.
 - `DEMO_ENABLED=true` y el secreto `dev-secret` son **solo para desarrollo**. En producción:
   `DEMO_ENABLED=false` y un secreto aleatorio por fuente.
+- `ADMIN_TOKEN` habilita replay; si está vacío, el endpoint no se registra. Usa un token aleatorio y
+  no lo expongas en el frontend.
 - El endpoint de demo no está rate-limitado todavía; no lo expongas a Internet sin límites.
 - La firma cubre el body crudo, no el JSON re-serializado.
+- La política IAM de Terraform limita la app a las dos colas del proyecto; no usa `sqs:*` sobre `*`.
 
 ## Licencia
 

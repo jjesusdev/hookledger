@@ -1,0 +1,54 @@
+services:
+  localstack:
+    image: localstack/localstack:2026.10.3
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      DEBUG: "0"
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/10-queues.sh:ro
+
+  app:
+    depends_on:
+      localstack:
+        condition: service_started
+    environment:
+      PUBLISHER: sqs
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/hookledger-events
+      SQS_DLQ_URL: http://localstack:4566/000000000000/hookledger-events-dlq
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      DEMO_TARGET_SECRET: dev-target-secret
+      ADMIN_TOKEN: demo-admin-token
+      WORKER_ENABLED: "false"
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/hookledger
+      DB_USER: hookledger
+      DB_PASSWORD: hookledger
+      PUBLISHER: log
+      OUTBOX_ENABLED: "false"
+      WORKER_ENABLED: "true"
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/hookledger-events
+      SQS_DLQ_URL: http://localstack:4566/000000000000/hookledger-events-dlq
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      DEMO_TARGET_URL: http://app:8080/v1/demo/receive
+      DEMO_TARGET_SECRET: dev-target-secret
+      DEMO_ENABLED: "false"
+      SERVER_PORT: "8081"
+      WORKER_WAIT_TIME_SECONDS: "1"
+      WORKER_MAX_RECEIVES: "3"

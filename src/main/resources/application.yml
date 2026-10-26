@@ -14,6 +14,10 @@ spring:
     default-property-inclusion: non_null
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      pool:
+        size: 4
 
 server:
   port: ${PORT:8080}
@@ -44,7 +48,8 @@ info:
 hookledger:
   security:
     max-clock-skew-seconds: ${MAX_CLOCK_SKEW_SECONDS:300}
-    max-body-bytes: ${MAX_BODY_BYTES:262144}
+    # SQS caps a message at 256 KiB; the outbox envelope needs a little headroom.
+    max-body-bytes: ${MAX_BODY_BYTES:200000}
   sources:
     demo:
       secret: ${DEMO_WEBHOOK_SECRET:dev-secret}
@@ -53,6 +58,26 @@ hookledger:
     poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:500}
     batch-size: ${OUTBOX_BATCH_SIZE:50}
   publisher: ${PUBLISHER:log}
+  sqs:
+    queue-url: ${SQS_QUEUE_URL:}
+    dlq-url: ${SQS_DLQ_URL:}
+    region: ${AWS_REGION:us-east-1}
+    endpoint: ${AWS_ENDPOINT_URL:}
+  worker:
+    enabled: ${WORKER_ENABLED:false}
+    poll-interval-ms: ${WORKER_POLL_INTERVAL_MS:1000}
+    wait-time-seconds: ${WORKER_WAIT_TIME_SECONDS:5}
+    max-messages: ${WORKER_MAX_MESSAGES:10}
+    max-receives: ${WORKER_MAX_RECEIVES:3}
+    visibility-timeout-seconds: ${WORKER_VISIBILITY_TIMEOUT_SECONDS:30}
+    backoff-base-seconds: ${WORKER_BACKOFF_BASE_SECONDS:2}
+    backoff-max-seconds: ${WORKER_BACKOFF_MAX_SECONDS:60}
+  targets:
+    demo:
+      url: ${DEMO_TARGET_URL:http://localhost:8080/v1/demo/receive}
+      secret: ${DEMO_TARGET_SECRET:dev-target-secret}
+  admin:
+    token: ${ADMIN_TOKEN:}
   demo:
     enabled: ${DEMO_ENABLED:true}
 

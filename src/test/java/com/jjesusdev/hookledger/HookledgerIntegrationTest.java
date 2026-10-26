@@ -3,6 +3,8 @@ package com.jjesusdev.hookledger;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jjesusdev.hookledger.crypto.Hmac;
+import com.jjesusdev.hookledger.delivery.DeliveryOutcome;
+import com.jjesusdev.hookledger.delivery.DeliveryRepository;
 import com.jjesusdev.hookledger.demo.DemoBurstResponse;
 import com.jjesusdev.hookledger.ingest.IngestResponse;
 import com.jjesusdev.hookledger.ingest.IngestService;
@@ -26,6 +28,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "hookledger.sources.demo.secret=test-secret",
+                "hookledger.targets.demo.secret=dev-target-secret",
                 "hookledger.demo.enabled=true",
                 "hookledger.outbox.enabled=false",
                 "spring.datasource.hikari.maximum-pool-size=20",
@@ -65,6 +69,9 @@ class HookledgerIntegrationTest {
 
     @Autowired
     private OutboxPublisher outboxPublisher;
+
+    @Autowired
+    private DeliveryRepository deliveryRepository;
 
     @Test
     void acceptsEventAndWritesOutboxInTheSameTransaction() {
@@ -257,6 +264,71 @@ class HookledgerIntegrationTest {
         assertThat(count("SELECT sum(attempts) FROM outbox_event")).isEqualTo(events);
         assertThat(count("SELECT max(attempts) FROM outbox_event")).isEqualTo(1);
         assertThat(count("SELECT count(*) FROM webhook_event WHERE status = 'PUBLISHED'")).isEqualTo(events);
+    }
+
+    @Test
+    void demoReceiverAcceptsADeliverySignedWithTheTargetSecret() {
+        String body = "{\"type\":\"demo.ping\",\"data\":{\"n\":1}}";
+        long timestamp = Instant.now().getEpochSecond();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("X-Hook-Id", "delivery-1");
+        headers.set("X-Hook-Source", "demo");
+        headers.set("X-Hook-Type", "demo.ping");
+        headers.set("X-Hook-Timestamp", Long.toString(timestamp));
+        headers.set("X-Hook-Signature",
+                Hmac.signHex("dev-target-secret", Long.toString(timestamp), body.getBytes(StandardCharsets.UTF_8)));
+
+        ResponseEntity<String> response = rest.postForEntity(
+                "/v1/demo/receive",
+                new HttpEntity<>(body.getBytes(StandardCharsets.UTF_8), headers),
+                String.class
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(readJson(response.getBody()).path("received").asBoolean()).isTrue();
+        assertThat(readJson(response.getBody()).path("eventId").asText()).isEqualTo("delivery-1");
+    }
+
+    @Test
+    void demoReceiverRejectsADeliveryWithTheWrongSecret() {
+        String body = "{\"type\":\"demo.ping\"}";
+        long timestamp = Instant.now().getEpochSecond();
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("X-Hook-Id", "delivery-bad");
+        headers.set("X-Hook-Timestamp", Long.toString(timestamp));
+        headers.set("X-Hook-Signature",
+                Hmac.signHex("wrong-secret", Long.toString(timestamp), body.getBytes(StandardCharsets.UTF_8)));
+
+        ResponseEntity<String> response = rest.postForEntity(
+                "/v1/demo/receive",
+                new HttpEntity<>(body.getBytes(StandardCharsets.UTF_8), headers),
+                String.class
+        );
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(readJson(response.getBody()).path("code").asText()).isEqualTo("INVALID_SIGNATURE");
+    }
+
+    @Test
+    void deliveryAttemptsArePersistedAndExposedPerEvent() {
+        ResponseEntity<IngestResponse> created = post("evt-delivery", BODY);
+        UUID eventId = created.getBody().id();
+        deliveryRepository.record(eventId, 1, "http://target.test/hook", 200, DeliveryOutcome.DELIVERED, null);
+        deliveryRepository.record(eventId, 2, "http://target.test/hook", 503, DeliveryOutcome.RETRY, "HTTP 503");
+
+        ResponseEntity<String> response = rest.getForEntity(
+                "/v1/events/" + eventId + "/deliveries", String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode attempts = readJson(response.getBody());
+        assertThat(attempts).hasSize(2);
+        assertThat(attempts.get(0).path("outcome").asText()).isEqualTo("DELIVERED");
+        assertThat(attempts.get(0).path("statusCode").asInt()).isEqualTo(200);
+        assertThat(attempts.get(0).path("error").isMissingNode()).isTrue();
+        assertThat(attempts.get(1).path("outcome").asText()).isEqualTo("RETRY");
+        assertThat(attempts.get(1).path("error").asText()).isEqualTo("HTTP 503");
     }
 
     private ResponseEntity<IngestResponse> post(String eventId, String body) {

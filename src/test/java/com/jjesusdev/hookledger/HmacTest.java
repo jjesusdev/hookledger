@@ -91,7 +91,11 @@ class HmacTest {
                 Map.of("demo", new HookledgerProperties.Source(SECRET)),
                 new HookledgerProperties.Outbox(false, 500, 50),
                 "log",
-                new HookledgerProperties.Demo(true)
+                new HookledgerProperties.Demo(true),
+                null,
+                null,
+                null,
+                null
         );
     }
 }

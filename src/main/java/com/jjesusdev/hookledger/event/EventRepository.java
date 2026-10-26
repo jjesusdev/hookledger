@@ -76,6 +76,26 @@ public class EventRepository {
                 .update();
     }
 
+    public void markDelivered(UUID id) {
+        jdbc.sql("""
+                        UPDATE webhook_event
+                        SET status = 'DELIVERED'
+                        WHERE id = :id AND status IN ('RECEIVED', 'PUBLISHED')
+                        """)
+                .param("id", id)
+                .update();
+    }
+
+    public void markFailed(UUID id) {
+        jdbc.sql("""
+                        UPDATE webhook_event
+                        SET status = 'FAILED'
+                        WHERE id = :id AND status IN ('RECEIVED', 'PUBLISHED')
+                        """)
+                .param("id", id)
+                .update();
+    }
+
     public Map<String, Long> countByStatus() {
         Map<String, Long> counts = new LinkedHashMap<>();
         for (EventStatus status : EventStatus.values()) {

@@ -1,5 +1,7 @@
 package com.jjesusdev.hookledger.event;
 
+import com.jjesusdev.hookledger.delivery.DeliveryOutcome;
+import com.jjesusdev.hookledger.delivery.DeliveryRepository;
 import com.jjesusdev.hookledger.outbox.OutboxRepository;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,11 +18,16 @@ public class StatsController {
 
     private final EventRepository eventRepository;
     private final OutboxRepository outboxRepository;
+    private final DeliveryRepository deliveryRepository;
     private final Clock clock;
 
-    public StatsController(EventRepository eventRepository, OutboxRepository outboxRepository, Clock clock) {
+    public StatsController(EventRepository eventRepository,
+                           OutboxRepository outboxRepository,
+                           DeliveryRepository deliveryRepository,
+                           Clock clock) {
         this.eventRepository = eventRepository;
         this.outboxRepository = outboxRepository;
+        this.deliveryRepository = deliveryRepository;
         this.clock = clock;
     }
 
@@ -45,7 +52,10 @@ public class StatsController {
                 delivered,
                 failed,
                 outboxRepository.countPending(),
-                oldestAgeSeconds
+                oldestAgeSeconds,
+                deliveryRepository.countByOutcome(DeliveryOutcome.DELIVERED),
+                deliveryRepository.countByOutcome(DeliveryOutcome.RETRY),
+                deliveryRepository.countByOutcome(DeliveryOutcome.FAILED)
         );
     }
 
@@ -56,7 +66,10 @@ public class StatsController {
             long delivered,
             long failed,
             long outboxPending,
-            Long outboxOldestAgeSeconds
+            Long outboxOldestAgeSeconds,
+            long deliveryDelivered,
+            long deliveryRetries,
+            long deliveryFailed
     ) {
     }
 }

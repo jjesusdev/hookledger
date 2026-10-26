@@ -20,6 +20,7 @@
     <properties>
         <java.version>21</java.version>
         <embedded-postgres.version>2.2.2</embedded-postgres.version>
+        <aws-sdk.version>2.57.3</aws-sdk.version>
     </properties>
 
     <dependencies>
@@ -53,6 +54,12 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
+            <version>${aws-sdk.version}</version>
         </dependency>
 
         <dependency>

@@ -1,4 +1,4 @@
-.PHONY: test package run up down logs demo
+.PHONY: test package run up down up-sqs down-sqs logs demo
 
 test:
 	mvn -B -ntp verify
@@ -14,6 +14,12 @@ up:
 
 down:
 	docker compose down -v
+
+up-sqs:
+	docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d
+
+down-sqs:
+	docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
 
 logs:
 	docker compose logs -f app

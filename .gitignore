@@ -1,5 +1,9 @@
 target/
 !.mvn/wrapper/maven-wrapper.jar
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
 .idea/
 *.iml
 .vscode/

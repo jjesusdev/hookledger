@@ -24,6 +24,17 @@ public class HmacVerifier {
         if (sourceConfig == null || sourceConfig.secret().isBlank()) {
             throw new WebhookRejectedException(401, "UNKNOWN_SOURCE", "Unknown webhook source");
         }
+        verifyWithSecret(sourceConfig.secret(), timestamp, signature, body);
+    }
+
+    /**
+     * Used by the demo receiver and any endpoint that has its own secret rather than a configured
+     * inbound source.
+     */
+    public void verifyWithSecret(String secret, String timestamp, String signature, byte[] body) {
+        if (secret == null || secret.isBlank()) {
+            throw new WebhookRejectedException(401, "UNKNOWN_SOURCE", "Signature secret is not configured");
+        }
 
         long timestampSeconds;
         try {
@@ -38,7 +49,7 @@ public class HmacVerifier {
                     "Timestamp is outside the allowed clock skew");
         }
 
-        byte[] expected = Hmac.sign(sourceConfig.secret(), timestamp, body);
+        byte[] expected = Hmac.sign(secret, timestamp, body);
         byte[] provided;
         try {
             provided = HexFormat.of().parseHex(signature);

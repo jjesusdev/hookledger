@@ -95,3 +95,87 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  sqs-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack with LocalStack
+        run: docker compose -f docker-compose.yml -f docker-compose.sqs.yml up -d --build
+      - name: Wait for the app and the queues
+        run: |
+          set -euo pipefail
+          healthy=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "app healthy after ${attempt} attempts"
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "${healthy}" != "true" ]; then
+            echo "app did not become healthy"
+            docker compose -f docker-compose.yml -f docker-compose.sqs.yml logs --no-color
+            exit 1
+          fi
+
+          for attempt in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.sqs.yml \
+              exec -T localstack awslocal sqs get-queue-url --queue-name hookledger-events >/dev/null 2>&1; then
+              echo "queues ready after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "queues were not created"
+          docker compose -f docker-compose.yml -f docker-compose.sqs.yml logs --no-color
+          exit 1
+      - name: Ingest and wait for a signed delivery
+        run: |
+          set -euo pipefail
+          response="$(./scripts/send-event.sh sqs-1)"
+          echo "ingest: ${response}"
+          event_id="$(echo "${response}" | jq -r .id)"
+
+          for attempt in $(seq 1 90); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${event_id}")"
+            deliveries="$(curl -fsS "http://localhost:8080/v1/events/${event_id}/deliveries")"
+            if echo "${event}" | jq -e '.status == "DELIVERED"' >/dev/null \
+              && echo "${deliveries}" | jq -e 'length > 0 and .[0].outcome == "DELIVERED"' >/dev/null; then
+              echo "event: ${event}"
+              echo "deliveries: ${deliveries}"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "event was not delivered through SQS"
+          curl -sS "http://localhost:8080/v1/events/${event_id}"
+          curl -sS "http://localhost:8080/v1/events/${event_id}/deliveries"
+          docker compose -f docker-compose.yml -f docker-compose.sqs.yml logs --no-color
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.sqs.yml logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
+
+  terraform:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.17.0"
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Init without backend
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+

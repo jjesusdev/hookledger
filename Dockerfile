@@ -6,7 +6,11 @@ COPY src ./src
 RUN mvn -B -ntp -DskipTests package
 
 FROM eclipse-temurin:21-jre-jammy
-RUN groupadd --system app && useradd --system --gid app --home /app app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system app \
+    && useradd --system --gid app --home /app app
 WORKDIR /app
 COPY --from=build /app/target/hookledger-*.jar app.jar
 USER app
