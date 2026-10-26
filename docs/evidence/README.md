@@ -25,17 +25,18 @@ BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40392064502](https://github.com/jjesusdev/hookledger/actions/runs/40392064502), 2026-10-26
-(commit `a33689f`):
+[40393018221](https://github.com/jjesusdev/hookledger/actions/runs/40393018221), 2026-10-26
+(commit `952e935`):
 
 | Job | Resultado |
 |---|---|
-| `test` | 29 tests, 0 fallos |
+| `test` | 30 tests, 0 fallos |
 | `terraform` | `fmt -check`, `init -backend=false`, `validate` verdes |
 | `build-image` | imagen Docker construida (sin push) |
 | `compose-smoke` | Postgres + app, health `UP`, evento aceptado, duplicado, outbox drenado |
 | `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
 | `dlq-replay-smoke` | 3 fallos → DLQ → replay → `DELIVERED` con 4 intentos auditados |
+| `worker-down-smoke` | worker detenido → evento `PUBLISHED` en la cola → worker arriba → `DELIVERED` |
 
 ### Tests por clase
 
@@ -196,7 +197,28 @@ La secuencia de intentos sobrevive al replay: el broker reinicia su receive coun
 `delivery_attempt` sigue creciendo. Ver corrida
 [40392064502](https://github.com/jjesusdev/hookledger/actions/runs/40392064502), job `dlq-replay-smoke`.
 
-### 12. La firma del script coincide con el verificador
+### 12. Un worker detenido no pierde el evento
+
+Job `worker-down-smoke`: con el stack arriba se detiene el worker, se ingesta un evento y se verifica
+que el outbox lo publica y el mensaje espera en SQS:
+
+```text
+messages waiting: 1
+event: {"status":"PUBLISHED",…}
+```
+
+Al volver a levantar el worker, el evento se entrega:
+
+```text
+event: {"id":"fa5acaee-…","status":"DELIVERED",…}
+deliveries: [{"attempt":1,"statusCode":200,"outcome":"DELIVERED"}]
+```
+
+El evento no se perdió mientras no había consumidor; el outbox y la cola absorbieron la caída. Ver
+corrida [40393018221](https://github.com/jjesusdev/hookledger/actions/runs/40393018221), job
+`worker-down-smoke`.
+
+### 13. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -219,8 +241,9 @@ Esto es tan importante como lo anterior:
 - **Docker local**: el engine no corre en la máquina de desarrollo; los smoke tests viven en CI.
 - **k3s / GHCR / demo pública**: todavía no desplegados. No hay URL pública.
 - **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
-- **Chaos**: matar el worker a mitad de entrega y caída de PostgreSQL siguen sin prueba end-to-end. La
-  DLQ y el replay ya están cubiertos por `dlq-replay-smoke`.
+- **Chaos**: caída de PostgreSQL y worker muerto a mitad de una entrega siguen sin prueba end-to-end.
+  La DLQ, el replay y el worker detenido ya están cubiertos por `dlq-replay-smoke` y
+  `worker-down-smoke`.
 - **Rotación de secretos**: documentada en el runbook, no automatizada.
 
 ## Cómo mantener esto honesto

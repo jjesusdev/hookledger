@@ -237,6 +237,7 @@ Otras decisiones deliberadas:
 | Stack en contenedores | job `compose-smoke` en CI | health `UP`, evento aceptado, duplicado detectado, outbox en 0 |
 | SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
 | DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
+| Worker caído | job `worker-down-smoke` en CI | evento `PUBLISHED` esperando en SQS; al volver el worker, `DELIVERED` sin pérdida |
 | Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
@@ -245,9 +246,9 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 
 - [x] Semana 1 — ingesta HMAC, idempotencia, outbox, tests, CI.
 - [x] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform validado, LocalStack en CI.
-- [x] Semana 2 (extra) — DLQ + replay end-to-end en CI (`dlq-replay-smoke`); la demo pública queda pendiente de hosting.
+- [x] Semana 2 (extra) — DLQ + replay y worker caído end-to-end en CI; la demo pública queda pendiente de hosting.
 - [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
-- [ ] Semana 3 — k6 10k eventos, chaos (worker kill, duplicados, veneno), Grafana, alertas SLO, demo pública.
+- [ ] Semana 3 — k6 10k eventos, chaos restante (PostgreSQL caído), Grafana, alertas SLO, demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 
 ## Seguridad
