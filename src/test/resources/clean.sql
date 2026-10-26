@@ -1,0 +1,1 @@
+TRUNCATE TABLE outbox_event, webhook_event RESTART IDENTITY CASCADE;
