@@ -1,4 +1,4 @@
-# Evidencia — Semanas 1 y 2
+# Evidencia — Semanas 1–3 (en curso)
 
 Este archivo registra qué está probado, cómo reproducirlo y qué **no** está probado todavía. La regla
 del proyecto es simple: si un claim no tiene un comando o un test detrás, no va en el README.
@@ -20,13 +20,13 @@ del proyecto es simple: si un claim no tiene un comando o un test detrás, no va
 
 ```
 mvn -B -ntp verify
-Tests run: 29, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 30, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40387744478](https://github.com/jjesusdev/hookledger/actions/runs/40387744478), 2026-10-26
-(commit `0f9e03d`):
+[40392064502](https://github.com/jjesusdev/hookledger/actions/runs/40392064502), 2026-10-26
+(commit `a33689f`):
 
 | Job | Resultado |
 |---|---|
@@ -35,6 +35,7 @@ CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/wor
 | `build-image` | imagen Docker construida (sin push) |
 | `compose-smoke` | Postgres + app, health `UP`, evento aceptado, duplicado, outbox drenado |
 | `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
+| `dlq-replay-smoke` | 3 fallos → DLQ → replay → `DELIVERED` con 4 intentos auditados |
 
 ### Tests por clase
 
@@ -44,7 +45,7 @@ CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/wor
 | `HookledgerIntegrationTest` | 12 | ingesta + outbox atómicos, duplicado idempotente, conflicto de payload, firma inválida, timestamp expirado, 16 duplicados concurrentes, burst de demo, outbox con 2 publishers, receiver firmado, intentos de entrega, replay `FAILED` → `DELIVERED` |
 | `SqsEventPublisherTest` | 2 | payload y atributos de correlación, falla rápido sin queue URL |
 | `DeliveryServiceTest` | 3 | firma sobre los bytes exactos, non-2xx como fallo, target ausente |
-| `SqsWorkerTest` | 4 | borra y marca `DELIVERED`, backoff de visibilidad, último intento a DLQ, mensaje malformado |
+| `SqsWorkerTest` | 5 | borra y marca `DELIVERED`, backoff 2 s y 4 s, último intento a DLQ, mensaje malformado |
 | `ReplayServiceTest` | 2 | mueve DLQ → cola principal, exige ambas URLs |
 
 ## Claims y su reproducción
@@ -155,10 +156,10 @@ mvn -B -ntp test -Dtest=SqsWorkerTest
 ```
 
 - Fallo en el intento 1 → `delivery_attempt(outcome=RETRY)`, `changeMessageVisibility` con 2 s y **no**
-  delete.
-- Fallo en el intento 2 → `RETRY` con 4 s; intento 3 → `FAILED` con 8 s (backoff exponencial, techo 60 s).
-- Fallo en el intento 3 (`maxReceives=3`) → evento `FAILED`, `outcome=FAILED`, **no** delete; en el
-  siguiente receive SQS lo mueve a la DLQ por `RedrivePolicy`.
+  delete. Test: `retriesWithVisibilityBackoffBeforeDeleting`.
+- Fallo en el intento 2 → `RETRY` con 4 s. Test: `growsTheBackoffWithEachReceive`.
+- Fallo en el intento 3 (`maxReceives=3`) → evento `FAILED`, `outcome=FAILED`, **no** delete y **no** se
+  reprograma; en el siguiente receive SQS lo mueve a la DLQ por `RedrivePolicy`.
 - Mensaje malformado → no rompe el poller; se reintenta y termina en la DLQ.
 
 ### 10. El replay mueve mensajes de la DLQ a la cola principal
@@ -172,7 +173,30 @@ El test verifica `sendMessage` a la cola principal y `deleteMessage` en la DLQ. 
 `ADMIN_TOKEN` está vacío. Un evento en `FAILED` que se reentrega con éxito pasa a `DELIVERED`; está
 cubierto por `aReplayedEventMovesFromFailedToDelivered`.
 
-### 11. La firma del script coincide con el verificador
+### 11. La DLQ y el replay funcionan de punta a punta
+
+El camino real está en el job `dlq-replay-smoke` de CI. Apunta el worker a
+`http://app:8080/v1/demo/does-not-exist` (404), deja que agote los intentos, restaura un worker sano,
+hace replay y verifica el evento y el historial:
+
+```text
+ingest: {"id":"6d352632-…","status":"RECEIVED","duplicate":false}
+event failed after the configured receives: {"status":"FAILED",…}
+dlq messages: 1
+replay: {"replayed":1}
+event delivered after replay: {"status":"DELIVERED",…}
+deliveries: [{"attempt":1,"statusCode":404,"outcome":"RETRY"},
+             {"attempt":2,"statusCode":404,"outcome":"RETRY"},
+             {"attempt":3,"statusCode":404,"outcome":"FAILED"},
+             {"attempt":4,"statusCode":200,"outcome":"DELIVERED"}]
+dlq drained after replay
+```
+
+La secuencia de intentos sobrevive al replay: el broker reinicia su receive count, pero
+`delivery_attempt` sigue creciendo. Ver corrida
+[40392064502](https://github.com/jjesusdev/hookledger/actions/runs/40392064502), job `dlq-replay-smoke`.
+
+### 12. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -195,11 +219,9 @@ Esto es tan importante como lo anterior:
 - **Docker local**: el engine no corre en la máquina de desarrollo; los smoke tests viven en CI.
 - **k3s / GHCR / demo pública**: todavía no desplegados. No hay URL pública.
 - **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
-- **Chaos**: matar el worker a mitad de entrega, caída de PostgreSQL, mensaje veneno real contra SQS.
-  Los casos unitarios existen, pero no la prueba de caos end-to-end.
+- **Chaos**: matar el worker a mitad de entrega y caída de PostgreSQL siguen sin prueba end-to-end. La
+  DLQ y el replay ya están cubiertos por `dlq-replay-smoke`.
 - **Rotación de secretos**: documentada en el runbook, no automatizada.
-- **Replay end-to-end**: `ReplayService` está probado con mocks y la transición `FAILED` → `DELIVERED`
-  con PostgreSQL real, pero no se ejecutó un replay contra LocalStack/SQS real.
 
 ## Cómo mantener esto honesto
 

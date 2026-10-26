@@ -281,6 +281,101 @@ jobs:
         if: always()
         run: docker compose ${COMPOSE_FILES} down -v
 
+  worker-down-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      COMPOSE_FILES: -f docker-compose.yml -f docker-compose.sqs.yml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack
+        run: docker compose ${COMPOSE_FILES} up -d --build
+      - name: Wait for the app and the queues
+        run: |
+          set -euo pipefail
+          healthy=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "app healthy after ${attempt} attempts"
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "${healthy}" != "true" ]; then
+            echo "app did not become healthy"
+            docker compose ${COMPOSE_FILES} logs --no-color
+            exit 1
+          fi
+          for attempt in $(seq 1 60); do
+            if docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-url --queue-name hookledger-events >/dev/null 2>&1; then
+              echo "queues ready after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "queues were not created"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Stop the worker and ingest an event
+        run: |
+          set -euo pipefail
+          docker compose ${COMPOSE_FILES} stop worker
+          response="$(./scripts/send-event.sh worker-down-1)"
+          echo "ingest: ${response}"
+          event_id="$(echo "${response}" | jq -r .id)"
+          echo "EVENT_ID=${event_id}" >> "${GITHUB_ENV}"
+
+          for attempt in $(seq 1 30); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${event_id}")"
+            if echo "${event}" | jq -e '.status == "PUBLISHED"' >/dev/null; then
+              echo "event published while the worker is down: ${event}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "event was not published to SQS"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Confirm the message is waiting in the queue
+        run: |
+          set -euo pipefail
+          pending="$(docker compose ${COMPOSE_FILES} exec -T localstack \
+            awslocal sqs get-queue-attributes \
+            --queue-url http://localhost:4566/000000000000/hookledger-events \
+            --attribute-names ApproximateNumberOfMessages \
+            --query 'Attributes.ApproximateNumberOfMessages' --output text | tr -dc '0-9')"
+          pending="${pending:-0}"
+          echo "messages waiting: ${pending}"
+          [ "${pending}" -ge 1 ]
+      - name: Start the worker and wait for delivery
+        run: |
+          set -euo pipefail
+          docker compose ${COMPOSE_FILES} start worker
+          for attempt in $(seq 1 60); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${EVENT_ID}")"
+            deliveries="$(curl -fsS "http://localhost:8080/v1/events/${EVENT_ID}/deliveries")"
+            if echo "${event}" | jq -e '.status == "DELIVERED"' >/dev/null \
+              && echo "${deliveries}" | jq -e 'length == 1 and .[0].outcome == "DELIVERED"' >/dev/null; then
+              echo "event: ${event}"
+              echo "deliveries: ${deliveries}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the worker did not deliver the queued event"
+          curl -sS "http://localhost:8080/v1/events/${EVENT_ID}"
+          curl -sS "http://localhost:8080/v1/events/${EVENT_ID}/deliveries"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILES} logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILES} down -v
+
   terraform:
     runs-on: ubuntu-24.04
     defaults:

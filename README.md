@@ -229,13 +229,14 @@ Otras decisiones deliberadas:
 
 | Claim | Cómo se reproduce | Resultado |
 |---|---|---|
-| Suite verde | `mvn -B -ntp verify` | 29 tests, 0 fallos (2026-10-26) |
+| Suite verde | `mvn -B -ntp verify` | 30 tests, 0 fallos (2026-10-26) |
 | Duplicados concurrentes | `HookledgerIntegrationTest.concurrentDuplicatesCreateOneEventAndOneOutboxRow` | 16 requests → 1 evento, 1 outbox |
 | Outbox sin doble claim | `HookledgerIntegrationTest.outboxPublisherClaimsEachRowExactlyOnceUnderConcurrency` | 100 filas, 2 publishers → `attempts = 1` en todas |
 | Demo con duplicados | `HookledgerIntegrationTest.demoBurstReportsAcceptedAndDuplicateEvents` | 20 únicos + 5 duplicados → 20 eventos |
 | Firma inválida | `HookledgerIntegrationTest.invalidSignatureIsRejectedBeforePersisting` | `401`, 0 filas escritas |
 | Stack en contenedores | job `compose-smoke` en CI | health `UP`, evento aceptado, duplicado detectado, outbox en 0 |
 | SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
+| DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
 | Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
@@ -244,6 +245,7 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 
 - [x] Semana 1 — ingesta HMAC, idempotencia, outbox, tests, CI.
 - [x] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform validado, LocalStack en CI.
+- [x] Semana 2 (extra) — DLQ + replay end-to-end en CI (`dlq-replay-smoke`); la demo pública queda pendiente de hosting.
 - [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
 - [ ] Semana 3 — k6 10k eventos, chaos (worker kill, duplicados, veneno), Grafana, alertas SLO, demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.

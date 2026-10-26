@@ -91,6 +91,19 @@ class SqsWorkerTest {
     }
 
     @Test
+    void growsTheBackoffWithEachReceive() {
+        when(deliveryService.deliver(any(), any(), any(), any(), any(), eq(2)))
+                .thenReturn(DeliveryService.DeliveryResult.failure(503, "target returned HTTP 503"));
+
+        worker.process(message("2"));
+
+        ArgumentCaptor<ChangeMessageVisibilityRequest> captor =
+                ArgumentCaptor.forClass(ChangeMessageVisibilityRequest.class);
+        verify(sqs).changeMessageVisibility(captor.capture());
+        assertThat(captor.getValue().visibilityTimeout()).isEqualTo(4);
+    }
+
+    @Test
     void marksTheEventFailedAndLeavesTheLastAttemptForTheDlq() {
         when(deliveryService.deliver(any(), any(), any(), any(), any(), eq(3)))
                 .thenReturn(DeliveryService.DeliveryResult.failure(500, "boom"));
