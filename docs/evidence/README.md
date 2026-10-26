@@ -23,9 +23,14 @@ Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
-CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Primera
-corrida verde el 2026-10-26: job `test` (tests + artefacto de reportes) y job `build-image` (imagen
-Docker construida, sin push).
+CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
+[40381456157](https://github.com/jjesusdev/hookledger/actions/runs/40381456157), 2026-10-26:
+
+| Job | Resultado |
+|---|---|
+| `test` | 14 tests, 0 fallos |
+| `build-image` | imagen Docker construida (sin push) |
+| `compose-smoke` | `docker compose` levanta Postgres + app, health `UP`, evento firmado aceptado, reintento duplicado, outbox drenado a 0 |
 
 | Clase | Tests | Qué cubre |
 |---|---|---|
@@ -86,7 +91,22 @@ mvn -B -ntp test -Dtest=HookledgerIntegrationTest#demoBurstReportsAcceptedAndDup
 
 `count=20&duplicates=5` → `requested=25`, `accepted=20`, `duplicates=5`, 20 filas en la base.
 
-### 7. La firma del script coincide con el verificador
+### 7. El stack completo funciona en contenedores
+
+```bash
+docker compose up -d --build
+# esperar /actuator/health = UP
+./scripts/send-event.sh smoke-1   # duplicate: false
+EVENT_ID=smoke-1 ./scripts/send-event.sh   # duplicate: true
+curl -s localhost:8080/v1/stats           # outboxPending: 0
+```
+
+Ejecutado en CI (`compose-smoke`, corrida 40381456157): health `UP`, primer evento aceptado, reintento
+marcado como duplicado y backlog del outbox drenado a 0. Esto valida Dockerfile, `docker compose`,
+Flyway y la app real, no solo el test embebido. La limitación es local: Docker Desktop no estaba
+corriendo en la máquina de desarrollo, por eso la prueba vive en CI.
+
+### 8. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -106,9 +126,8 @@ script, no la app; la app se valida con los tests de integración.
 
 Esto es tan importante como lo anterior:
 
-- **Dockerfile y `docker compose up`**: el Dockerfile se construye en CI, pero `docker compose up` no se
-  ejecutó en esta máquina porque el engine de Docker no estaba disponible. Falta la primera corrida real
-  end-to-end con Postgres en contenedor.
+- **Docker local**: `docker compose up` no se ejecuta en la máquina de desarrollo porque el engine no
+  está corriendo; lo cubre el job `compose-smoke` en CI.
 - **SQS / DLQ / retries / replay**: no existen aún; el publisher es `LoggingEventPublisher`.
 - **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
 - **Chaos**: matar el worker a mitad de publicación, mensaje veneno, caída de PostgreSQL. Semana 3.

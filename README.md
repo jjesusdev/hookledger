@@ -172,6 +172,7 @@ Otras decisiones deliberadas:
 | Outbox sin doble claim | `HookledgerIntegrationTest.outboxPublisherClaimsEachRowExactlyOnceUnderConcurrency` | 100 filas, 2 publishers → `attempts = 1` en todas |
 | Demo con duplicados | `HookledgerIntegrationTest.demoBurstReportsAcceptedAndDuplicateEvents` | 20 únicos + 5 duplicados → 20 eventos |
 | Firma inválida | `HookledgerIntegrationTest.invalidSignatureIsRejectedBeforePersisting` | `401`, 0 filas escritas |
+| Stack en contenedores | job `compose-smoke` en CI | health `UP`, evento aceptado, duplicado detectado, outbox en 0 |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 
