@@ -162,6 +162,125 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
 
+  dlq-replay-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      COMPOSE_FILES: -f docker-compose.yml -f docker-compose.sqs.yml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack with a target that always fails
+        env:
+          DEMO_TARGET_URL: http://app:8080/v1/demo/does-not-exist
+          WORKER_BACKOFF_BASE_SECONDS: "1"
+        run: docker compose ${COMPOSE_FILES} up -d --build
+      - name: Wait for the app and the queues
+        run: |
+          set -euo pipefail
+          healthy=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "app healthy after ${attempt} attempts"
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "${healthy}" != "true" ]; then
+            echo "app did not become healthy"
+            docker compose ${COMPOSE_FILES} logs --no-color
+            exit 1
+          fi
+          for attempt in $(seq 1 60); do
+            if docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-url --queue-name hookledger-events >/dev/null 2>&1; then
+              echo "queues ready after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "queues were not created"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Drive the event to the DLQ
+        run: |
+          set -euo pipefail
+          response="$(./scripts/send-event.sh dlq-1)"
+          echo "ingest: ${response}"
+          event_id="$(echo "${response}" | jq -r .id)"
+          echo "EVENT_ID=${event_id}" >> "${GITHUB_ENV}"
+
+          for attempt in $(seq 1 120); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${event_id}")"
+            dlq_pending="$(docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-attributes \
+              --queue-url http://localhost:4566/000000000000/hookledger-events-dlq \
+              --attribute-names ApproximateNumberOfMessages \
+              --query 'Attributes.ApproximateNumberOfMessages' --output text | tr -dc '0-9')"
+            dlq_pending="${dlq_pending:-0}"
+            if echo "${event}" | jq -e '.status == "FAILED"' >/dev/null && [ "${dlq_pending}" -ge 1 ]; then
+              echo "event failed after the configured receives: ${event}"
+              echo "dlq messages: ${dlq_pending}"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "event never reached the DLQ"
+          curl -sS "http://localhost:8080/v1/events/${event_id}"
+          curl -sS "http://localhost:8080/v1/events/${event_id}/deliveries"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Restore a healthy worker
+        run: docker compose ${COMPOSE_FILES} up -d --no-deps --force-recreate worker
+      - name: Replay from the DLQ and wait for delivery
+        run: |
+          set -euo pipefail
+          replay="$(curl -fsS -X POST -H 'X-Admin-Token: demo-admin-token' \
+            'http://localhost:8080/v1/admin/replay?max=10')"
+          echo "replay: ${replay}"
+          echo "${replay}" | jq -e '.replayed >= 1' >/dev/null
+
+          for attempt in $(seq 1 60); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${EVENT_ID}")"
+            if echo "${event}" | jq -e '.status == "DELIVERED"' >/dev/null; then
+              echo "event delivered after replay: ${event}"
+              break
+            fi
+            sleep 1
+          done
+
+          deliveries="$(curl -fsS "http://localhost:8080/v1/events/${EVENT_ID}/deliveries")"
+          echo "deliveries: ${deliveries}"
+
+          # The audit trail survives the replay: attempts are a per-event sequence and the last one wins.
+          echo "${deliveries}" | jq -e 'to_entries | map(.value.attempt == (.key + 1)) | all' >/dev/null
+          echo "${deliveries}" | jq -e '.[-1].outcome == "DELIVERED"' >/dev/null
+          echo "${deliveries}" | jq -e '[.[].outcome] | index("FAILED") != null' >/dev/null
+
+          dlq_pending="1"
+          for attempt in $(seq 1 15); do
+            dlq_pending="$(docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-attributes \
+              --queue-url http://localhost:4566/000000000000/hookledger-events-dlq \
+              --attribute-names ApproximateNumberOfMessages \
+              --query 'Attributes.ApproximateNumberOfMessages' --output text | tr -dc '0-9')"
+            dlq_pending="${dlq_pending:-0}"
+            if [ "${dlq_pending}" -eq 0 ]; then
+              echo "dlq drained after replay"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "dlq still has ${dlq_pending} messages after replay"
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILES} logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILES} down -v
+
   terraform:
     runs-on: ubuntu-24.04
     defaults:

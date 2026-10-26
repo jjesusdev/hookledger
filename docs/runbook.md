@@ -204,6 +204,11 @@ La entrega es **at-least-once**, no exactly-once:
 - El target debe deduplicar por `X-Hook-Id`. `delivery_attempt` es idempotente por
   `(event_id, attempt)`, pero eso no evita una segunda llamada HTTP.
 
+`delivery_attempt.attempt` es una **secuencia por evento**, no el receive count de SQS. Un replay
+desde la DLQ reinicia el conteo del broker, pero el historial sigue creciendo: si el evento falló en
+los intentos 1–3 y el replay entrega en el intento 4, se ven las cuatro filas. Esa secuencia es la que
+devuelve `GET /v1/events/{id}/deliveries`.
+
 Cómo revisar un evento:
 
 ```bash
@@ -237,9 +242,13 @@ Reglas:
 - El replay es at-least-once: si el proceso muere entre `sendMessage` y `deleteMessage`, el mensaje
   puede volver a la cola principal. No se pierde, se duplica.
 - Un evento en `FAILED` que se reentrega con éxito pasa a `DELIVERED`; el historial de intentos queda
-  en `delivery_attempt`.
+  en `delivery_attempt`, con un intento nuevo (no se reutiliza el número).
 - Antes de reenviar, corregir la causa: target caído, URL mal configurada, secreto distinto o payload
   venenoso. Reenviar un mensaje veneno solo gasta intentos y vuelve a llenar la DLQ.
+
+El ciclo completo (fallo sostenido → DLQ → replay → entrega) está cubierto por el job
+`dlq-replay-smoke` en CI: worker apuntado a un target que devuelve 404, tres intentos, mensaje en la
+DLQ, worker sano, replay y evento `DELIVERED` con el historial de intentos intacto.
 
 Si la DLQ crece de forma sostenida, el problema no es la DLQ: es el target o el payload. La DLQ es el
 lugar donde se conserva la evidencia.

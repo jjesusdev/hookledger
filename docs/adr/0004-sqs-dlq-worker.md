@@ -26,7 +26,8 @@ de reintentar mensajes que agotaron sus intentos.
 6. **Replay explícito y autenticado.** `POST /v1/admin/replay` mueve mensajes de la DLQ a la cola
    principal. Requiere `ADMIN_TOKEN`; sin token el endpoint no existe.
 7. **Intentos persistidos.** `delivery_attempt` guarda `(event_id, attempt)`, código HTTP, outcome y
-   error. La unique constraint absorbe redeliveries con el mismo número de intento.
+   error. `attempt` es una secuencia por evento, no el receive count del broker: un replay agrega el
+   intento siguiente en vez de sobrescribir el historial.
 
 ## Consecuencias
 
