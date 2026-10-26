@@ -1,6 +1,6 @@
 services:
   localstack:
-    image: localstack/localstack:2026.10.3
+    image: localstack/localstack:3.8.1
     environment:
       SERVICES: sqs
       AWS_DEFAULT_REGION: us-east-1
