@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jjesusdev.hookledger.config.HookledgerProperties;
 import com.jjesusdev.hookledger.event.EventRepository;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -34,9 +32,7 @@ public class SqsWorker {
     private final EventRepository eventRepository;
     private final ObjectMapper objectMapper;
     private final String queueUrl;
-    private final Counter deliveredCounter;
-    private final Counter retryCounter;
-    private final Counter failedCounter;
+    private final DeliveryMetrics metrics;
 
     public SqsWorker(SqsClient sqs,
                      HookledgerProperties properties,
@@ -44,20 +40,18 @@ public class SqsWorker {
                      DeliveryRepository deliveryRepository,
                      EventRepository eventRepository,
                      ObjectMapper objectMapper,
-                     MeterRegistry meterRegistry) {
+                     DeliveryMetrics metrics) {
         this.sqs = sqs;
         this.properties = properties;
         this.deliveryService = deliveryService;
         this.deliveryRepository = deliveryRepository;
         this.eventRepository = eventRepository;
         this.objectMapper = objectMapper;
+        this.metrics = metrics;
         this.queueUrl = properties.sqs().queueUrl();
         if (queueUrl.isBlank()) {
             throw new IllegalStateException("hookledger.sqs.queue-url is required when worker.enabled=true");
         }
-        this.deliveredCounter = meterRegistry.counter("hookledger.delivery.total", "result", "delivered");
-        this.retryCounter = meterRegistry.counter("hookledger.delivery.total", "result", "retry");
-        this.failedCounter = meterRegistry.counter("hookledger.delivery.total", "result", "failed");
     }
 
     @Scheduled(fixedDelayString = "${hookledger.worker.poll-interval-ms:1000}")
@@ -121,7 +115,7 @@ public class SqsWorker {
                     DeliveryOutcome.DELIVERED, null);
             eventRepository.markDelivered(eventId);
             delete(message);
-            deliveredCounter.increment();
+            metrics.delivered();
             log.debug("delivered event {} to {} (SQS receive {})", eventId, target.url(), attempt);
             return;
         }
@@ -133,11 +127,11 @@ public class SqsWorker {
 
         if (lastAttempt) {
             eventRepository.markFailed(eventId);
-            failedCounter.increment();
+            metrics.failed();
             log.warn("event {} failed after {} SQS receives; leaving it for the DLQ: {}",
                     eventId, attempt, result.error());
         } else {
-            retryCounter.increment();
+            metrics.retry();
             retryLater(message, attempt, result.error());
         }
     }

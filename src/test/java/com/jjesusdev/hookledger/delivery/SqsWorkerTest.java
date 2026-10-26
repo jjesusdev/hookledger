@@ -55,7 +55,7 @@ class SqsWorkerTest {
                 null
         );
         worker = new SqsWorker(sqs, properties, deliveryService, deliveryRepository,
-                eventRepository, new ObjectMapper(), new SimpleMeterRegistry());
+                eventRepository, new ObjectMapper(), new DeliveryMetrics(new SimpleMeterRegistry()));
     }
 
     @Test
