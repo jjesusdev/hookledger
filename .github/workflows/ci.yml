@@ -281,6 +281,117 @@ jobs:
         if: always()
         run: docker compose ${COMPOSE_FILES} down -v
 
+  poison-message-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    timeout-minutes: 20
+    env:
+      COMPOSE_FILES: -f docker-compose.yml -f docker-compose.sqs.yml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack with a fast retry loop
+        env:
+          WORKER_BACKOFF_BASE_SECONDS: "1"
+          WORKER_VISIBILITY_TIMEOUT_SECONDS: "5"
+        run: docker compose ${COMPOSE_FILES} up -d --build
+      - name: Wait for the app and the queues
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "app healthy after ${attempt} attempts"
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null
+          for attempt in $(seq 1 60); do
+            if docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-url --queue-name hookledger-events >/dev/null 2>&1; then
+              echo "queues ready after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "queues were not created"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Publish a message that is not a valid envelope
+        run: |
+          set -euo pipefail
+          docker compose ${COMPOSE_FILES} exec -T localstack \
+            awslocal sqs send-message \
+            --queue-url http://localhost:4566/000000000000/hookledger-events \
+            --message-body 'this is not json'
+      - name: The worker survives and the poison message lands in the DLQ
+        run: |
+          set -euo pipefail
+          dlq_pending=0
+          for attempt in $(seq 1 90); do
+            dlq_pending="$(docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-attributes \
+              --queue-url http://localhost:4566/000000000000/hookledger-events-dlq \
+              --attribute-names ApproximateNumberOfMessages \
+              --query 'Attributes.ApproximateNumberOfMessages' --output text | tr -dc '0-9')"
+            dlq_pending="${dlq_pending:-0}"
+            if [ "${dlq_pending}" -ge 1 ]; then
+              echo "poison message reached the DLQ after ${attempt} attempts"
+              break
+            fi
+            sleep 1
+          done
+          [ "${dlq_pending}" -ge 1 ]
+
+          main_pending=1
+          for attempt in $(seq 1 15); do
+            main_pending="$(docker compose ${COMPOSE_FILES} exec -T localstack \
+              awslocal sqs get-queue-attributes \
+              --queue-url http://localhost:4566/000000000000/hookledger-events \
+              --attribute-names ApproximateNumberOfMessages \
+              --query 'Attributes.ApproximateNumberOfMessages' --output text | tr -dc '0-9')"
+            main_pending="${main_pending:-0}"
+            if [ "${main_pending}" -eq 0 ]; then
+              echo "main queue is empty"
+              break
+            fi
+            sleep 1
+          done
+          echo "main queue messages: ${main_pending}"
+          [ "${main_pending}" -eq 0 ]
+
+          attempts="$(docker compose ${COMPOSE_FILES} logs --no-color worker \
+            | grep -c 'discarding malformed message' || true)"
+          echo "malformed receives logged: ${attempts}"
+          [ "${attempts}" -ge 3 ]
+
+          docker compose ${COMPOSE_FILES} exec -T worker \
+            curl -fsS http://localhost:8081/actuator/health/liveness | jq -e '.status == "UP"' >/dev/null
+          echo "worker is still alive"
+      - name: A valid event is still delivered after the poison message
+        run: |
+          set -euo pipefail
+          response="$(./scripts/send-event.sh poison-survivor-1)"
+          echo "ingest: ${response}"
+          event_id="$(echo "${response}" | jq -r .id)"
+          for attempt in $(seq 1 60); do
+            event="$(curl -fsS "http://localhost:8080/v1/events/${event_id}")"
+            if echo "${event}" | jq -e '.status == "DELIVERED"' >/dev/null; then
+              echo "event delivered after the poison message: ${event}"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "http://localhost:8080/v1/events/${event_id}" | jq -e '.status == "DELIVERED"' >/dev/null
+          deliveries="$(curl -fsS "http://localhost:8080/v1/events/${event_id}/deliveries")"
+          echo "deliveries: ${deliveries}"
+          echo "${deliveries}" | jq -e '.[-1].outcome == "DELIVERED"' >/dev/null
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILES} logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILES} down -v
+
   worker-down-smoke:
     runs-on: ubuntu-24.04
     needs: test
@@ -535,9 +646,19 @@ jobs:
           echo "${dashboard}" | jq -e '.dashboard.title | test("hookledger")' >/dev/null
           echo "${dashboard}" | jq -e '.dashboard.panels | length >= 10' >/dev/null
 
-          curl -fsS -u admin:admin \
-            http://localhost:3000/api/datasources/uid/prometheus/health \
-            | jq -e '.status == "OK"' >/dev/null
+          # Grafana registers datasource plugins in the background; on a cold runner the health
+          # endpoint can answer 404 for a few seconds even though the dashboard is already served.
+          datasource=""
+          for attempt in $(seq 1 60); do
+            datasource="$(curl -s -u admin:admin \
+              http://localhost:3000/api/datasources/uid/prometheus/health || true)"
+            if echo "${datasource}" | jq -e '.status == "OK"' >/dev/null 2>&1; then
+              echo "datasource healthy after ${attempt} attempts"
+              break
+            fi
+            sleep 2
+          done
+          echo "${datasource}" | jq -e '.status == "OK"' >/dev/null
           echo "Grafana datasource and dashboard are healthy"
       - name: Dump logs on failure
         if: failure()
