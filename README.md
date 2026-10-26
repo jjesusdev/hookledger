@@ -229,7 +229,7 @@ Otras decisiones deliberadas:
 
 | Claim | Cómo se reproduce | Resultado |
 |---|---|---|
-| Suite verde | `mvn -B -ntp verify` | 28 tests, 0 fallos (2026-10-26) |
+| Suite verde | `mvn -B -ntp verify` | 29 tests, 0 fallos (2026-10-26) |
 | Duplicados concurrentes | `HookledgerIntegrationTest.concurrentDuplicatesCreateOneEventAndOneOutboxRow` | 16 requests → 1 evento, 1 outbox |
 | Outbox sin doble claim | `HookledgerIntegrationTest.outboxPublisherClaimsEachRowExactlyOnceUnderConcurrency` | 100 filas, 2 publishers → `attempts = 1` en todas |
 | Demo con duplicados | `HookledgerIntegrationTest.demoBurstReportsAcceptedAndDuplicateEvents` | 20 únicos + 5 duplicados → 20 eventos |

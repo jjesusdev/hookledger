@@ -1,4 +1,4 @@
-# Evidencia — Semana 1
+# Evidencia — Semanas 1 y 2
 
 Este archivo registra qué está probado, cómo reproducirlo y qué **no** está probado todavía. La regla
 del proyecto es simple: si un claim no tiene un comando o un test detrás, no va en el README.
@@ -13,29 +13,38 @@ del proyecto es simple: si un claim no tiene un comando o un test detrás, no va
 | JDK | Temurin 21.0.13 |
 | Maven | 3.9.9 |
 | PostgreSQL de tests | 14 embebido (Zonky `embedded-postgres` 2.2.2) |
-| Docker local | **no disponible** (engine apagado), por eso los tests no lo usan |
+| Docker local | **no disponible** (engine apagado); los smoke tests viven en CI |
+| SQS local | LocalStack `3.8.1` en CI, sin credenciales de AWS |
 
 ## Resultado
 
 ```
 mvn -B -ntp verify
-Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 29, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40381456157](https://github.com/jjesusdev/hookledger/actions/runs/40381456157), 2026-10-26:
+[40386745826](https://github.com/jjesusdev/hookledger/actions/runs/40386745826), 2026-10-26:
 
 | Job | Resultado |
 |---|---|
-| `test` | 14 tests, 0 fallos |
+| `test` | 29 tests, 0 fallos |
+| `terraform` | `fmt -check`, `init -backend=false`, `validate` verdes |
 | `build-image` | imagen Docker construida (sin push) |
-| `compose-smoke` | `docker compose` levanta Postgres + app, health `UP`, evento firmado aceptado, reintento duplicado, outbox drenado a 0 |
+| `compose-smoke` | Postgres + app, health `UP`, evento aceptado, duplicado, outbox drenado |
+| `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
+
+### Tests por clase
 
 | Clase | Tests | Qué cubre |
 |---|---|---|
 | `HmacTest` | 6 | vector conocido HMAC-SHA256, firma válida, body alterado, timestamp expirado, fuente desconocida, firma no-hex |
-| `HookledgerIntegrationTest` | 8 | ingesta + outbox atómicos, duplicado idempotente, conflicto de payload, firma inválida, timestamp expirado, 16 duplicados concurrentes, burst de demo, outbox con 2 publishers |
+| `HookledgerIntegrationTest` | 12 | ingesta + outbox atómicos, duplicado idempotente, conflicto de payload, firma inválida, timestamp expirado, 16 duplicados concurrentes, burst de demo, outbox con 2 publishers, receiver firmado, intentos de entrega, replay `FAILED` → `DELIVERED` |
+| `SqsEventPublisherTest` | 2 | payload y atributos de correlación, falla rápido sin queue URL |
+| `DeliveryServiceTest` | 3 | firma sobre los bytes exactos, non-2xx como fallo, target ausente |
+| `SqsWorkerTest` | 4 | borra y marca `DELIVERED`, backoff de visibilidad, último intento a DLQ, mensaje malformado |
+| `ReplayServiceTest` | 2 | mueve DLQ → cola principal, exige ambas URLs |
 
 ## Claims y su reproducción
 
@@ -101,12 +110,67 @@ EVENT_ID=smoke-1 ./scripts/send-event.sh   # duplicate: true
 curl -s localhost:8080/v1/stats           # outboxPending: 0
 ```
 
-Ejecutado en CI (`compose-smoke`, corrida 40381456157): health `UP`, primer evento aceptado, reintento
-marcado como duplicado y backlog del outbox drenado a 0. Esto valida Dockerfile, `docker compose`,
-Flyway y la app real, no solo el test embebido. La limitación es local: Docker Desktop no estaba
-corriendo en la máquina de desarrollo, por eso la prueba vive en CI.
+Ejecutado en CI (`compose-smoke`): health `UP`, primer evento aceptado, reintento marcado como duplicado
+y backlog del outbox drenado a 0. Valida Dockerfile, `docker compose`, Flyway y la app real, no solo el
+test embebido.
 
-### 8. La firma del script coincide con el verificador
+### 8. El camino SQS → worker → HTTP firmado entrega el evento
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sqs.yml up -d --build
+id="$(./scripts/send-event.sh sqs-1 | jq -r .id)"
+# esperar unos segundos
+curl -s "localhost:8080/v1/events/${id}" | jq
+curl -s "localhost:8080/v1/events/${id}/deliveries" | jq
+```
+
+Salida real de la corrida `40386745826`:
+
+```json
+{
+  "id": "7dea97f3-e9cc-4a40-9e45-eabd2d7bf0ba",
+  "status": "DELIVERED",
+  "publishedAt": "2026-10-26T19:29:39.141838Z"
+}
+```
+
+```json
+[{
+  "attempt": 1,
+  "target": "http://app:8080/v1/demo/receive",
+  "statusCode": 200,
+  "outcome": "DELIVERED"
+}]
+```
+
+El worker recibió el mensaje de SQS, firmó el payload con el secreto del target, el receiver validó la
+firma y el worker borró el mensaje. El estado del evento pasó de `RECEIVED` a `DELIVERED`.
+
+### 9. Los fallos reintentan y el último intento queda para la DLQ
+
+```bash
+mvn -B -ntp test -Dtest=SqsWorkerTest
+```
+
+- Fallo en el intento 1 → `delivery_attempt(outcome=RETRY)`, `changeMessageVisibility` con 2 s y **no**
+  delete.
+- Fallo en el intento 2 → `RETRY` con 4 s; intento 3 → `FAILED` con 8 s (backoff exponencial, techo 60 s).
+- Fallo en el intento 3 (`maxReceives=3`) → evento `FAILED`, `outcome=FAILED`, **no** delete; en el
+  siguiente receive SQS lo mueve a la DLQ por `RedrivePolicy`.
+- Mensaje malformado → no rompe el poller; se reintenta y termina en la DLQ.
+
+### 10. El replay mueve mensajes de la DLQ a la cola principal
+
+```bash
+mvn -B -ntp test -Dtest=ReplayServiceTest
+curl -X POST -H 'X-Admin-Token: ...' 'localhost:8080/v1/admin/replay?max=10'
+```
+
+El test verifica `sendMessage` a la cola principal y `deleteMessage` en la DLQ. El endpoint no existe si
+`ADMIN_TOKEN` está vacío. Un evento en `FAILED` que se reentrega con éxito pasa a `DELIVERED`; está
+cubierto por `aReplayedEventMovesFromFailedToDelivered`.
+
+### 11. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -117,22 +181,23 @@ printf '%s.%s' 1700000000 '{"type":"demo.ping"}' \
 ```
 
 El mismo vector está cubierto del lado Java por `HmacTest` (incluido el vector RFC de `HmacSHA256`).
-
 Además, `scripts/send-event.sh` se ejecutó contra un servidor de referencia que recalcula el HMAC: los
-tres casos (id automático, mismo id, `BODY` custom) llegaron con firma válida de 64 hex. Eso valida el
-script, no la app; la app se valida con los tests de integración.
+tres casos (id automático, mismo id, `BODY` custom) llegaron con firma válida de 64 hex.
 
 ## Lo que **no** está probado todavía
 
 Esto es tan importante como lo anterior:
 
-- **Docker local**: `docker compose up` no se ejecuta en la máquina de desarrollo porque el engine no
-  está corriendo; lo cubre el job `compose-smoke` en CI.
-- **SQS / DLQ / retries / replay**: no existen aún; el publisher es `LoggingEventPublisher`.
+- **AWS real**: Terraform está validado, no aplicado. No hay colas reales, ni IAM adjunto, ni alarmas
+  conectadas a SNS. El smoke test usa LocalStack `3.8.1`.
+- **Docker local**: el engine no corre en la máquina de desarrollo; los smoke tests viven en CI.
+- **k3s / GHCR / demo pública**: todavía no desplegados. No hay URL pública.
 - **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
-- **Chaos**: matar el worker a mitad de publicación, mensaje veneno, caída de PostgreSQL. Semana 3.
-- **Demo pública**: no desplegada.
+- **Chaos**: matar el worker a mitad de entrega, caída de PostgreSQL, mensaje veneno real contra SQS.
+  Los casos unitarios existen, pero no la prueba de caos end-to-end.
 - **Rotación de secretos**: documentada en el runbook, no automatizada.
+- **Replay end-to-end**: `ReplayService` está probado con mocks y la transición `FAILED` → `DELIVERED`
+  con PostgreSQL real, pero no se ejecutó un replay contra LocalStack/SQS real.
 
 ## Cómo mantener esto honesto
 
