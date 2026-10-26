@@ -85,7 +85,7 @@ class SqsWorkerTest {
         ArgumentCaptor<ChangeMessageVisibilityRequest> captor =
                 ArgumentCaptor.forClass(ChangeMessageVisibilityRequest.class);
         verify(sqs).changeMessageVisibility(captor.capture());
-        assertThat(captor.getValue().visibilityTimeout()).isEqualTo(30);
+        assertThat(captor.getValue().visibilityTimeout()).isEqualTo(2);
         verify(sqs, never()).deleteMessage(any(DeleteMessageRequest.class));
         verify(eventRepository, never()).markFailed(EVENT_ID);
     }

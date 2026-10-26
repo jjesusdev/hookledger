@@ -80,7 +80,7 @@ public class EventRepository {
         jdbc.sql("""
                         UPDATE webhook_event
                         SET status = 'DELIVERED'
-                        WHERE id = :id AND status IN ('RECEIVED', 'PUBLISHED')
+                        WHERE id = :id AND status IN ('RECEIVED', 'PUBLISHED', 'FAILED')
                         """)
                 .param("id", id)
                 .update();

@@ -170,7 +170,9 @@ public class SqsWorker {
         int exponent = Math.min(Math.max(0, attempt - 1), 10);
         long exponential = (long) properties.worker().backoffBaseSeconds() << exponent;
         long capped = Math.min(exponential, properties.worker().backoffMaxSeconds());
-        return (int) Math.max(capped, properties.worker().visibilityTimeoutSeconds());
+        // The delay is applied after the delivery attempt ended, so it does not need to cover
+        // processing time. SQS rejects a negative visibility timeout; 1s is the safe floor.
+        return (int) Math.max(capped, 1);
     }
 
     private static int receiveCount(Message message) {

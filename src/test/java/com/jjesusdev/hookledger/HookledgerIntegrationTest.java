@@ -6,6 +6,8 @@ import com.jjesusdev.hookledger.crypto.Hmac;
 import com.jjesusdev.hookledger.delivery.DeliveryOutcome;
 import com.jjesusdev.hookledger.delivery.DeliveryRepository;
 import com.jjesusdev.hookledger.demo.DemoBurstResponse;
+import com.jjesusdev.hookledger.event.EventRepository;
+import com.jjesusdev.hookledger.event.EventStatus;
 import com.jjesusdev.hookledger.ingest.IngestResponse;
 import com.jjesusdev.hookledger.ingest.IngestService;
 import com.jjesusdev.hookledger.outbox.OutboxPublisher;
@@ -72,6 +74,9 @@ class HookledgerIntegrationTest {
 
     @Autowired
     private DeliveryRepository deliveryRepository;
+
+    @Autowired
+    private EventRepository eventRepository;
 
     @Test
     void acceptsEventAndWritesOutboxInTheSameTransaction() {
@@ -329,6 +334,20 @@ class HookledgerIntegrationTest {
         assertThat(attempts.get(0).path("error").isMissingNode()).isTrue();
         assertThat(attempts.get(1).path("outcome").asText()).isEqualTo("RETRY");
         assertThat(attempts.get(1).path("error").asText()).isEqualTo("HTTP 503");
+    }
+
+    @Test
+    void aReplayedEventMovesFromFailedToDelivered() {
+        ResponseEntity<IngestResponse> created = post("evt-replay", BODY);
+        UUID eventId = created.getBody().id();
+        eventRepository.markFailed(eventId);
+        assertThat(eventRepository.findById(eventId).orElseThrow().status())
+                .isEqualTo(EventStatus.FAILED);
+
+        eventRepository.markDelivered(eventId);
+
+        assertThat(eventRepository.findById(eventId).orElseThrow().status())
+                .isEqualTo(EventStatus.DELIVERED);
     }
 
     private ResponseEntity<IngestResponse> post(String eventId, String body) {
