@@ -117,24 +117,24 @@ public class SqsWorker {
                 target, source, eventId, eventType, payload, attempt);
 
         if (result.successful()) {
-            deliveryRepository.record(eventId, attempt, target.url(), result.statusCode(),
+            deliveryRepository.record(eventId, target.url(), result.statusCode(),
                     DeliveryOutcome.DELIVERED, null);
             eventRepository.markDelivered(eventId);
             delete(message);
             deliveredCounter.increment();
-            log.debug("delivered event {} to {} on attempt {}", eventId, target.url(), attempt);
+            log.debug("delivered event {} to {} (SQS receive {})", eventId, target.url(), attempt);
             return;
         }
 
         boolean lastAttempt = attempt >= properties.worker().maxReceives();
         DeliveryOutcome outcome = lastAttempt ? DeliveryOutcome.FAILED : DeliveryOutcome.RETRY;
-        deliveryRepository.record(eventId, attempt, target == null ? "" : target.url(),
+        deliveryRepository.record(eventId, target == null ? "" : target.url(),
                 result.statusCode() == 0 ? null : result.statusCode(), outcome, result.error());
 
         if (lastAttempt) {
             eventRepository.markFailed(eventId);
             failedCounter.increment();
-            log.warn("event {} failed after {} attempts; leaving it for the DLQ: {}",
+            log.warn("event {} failed after {} SQS receives; leaving it for the DLQ: {}",
                     eventId, attempt, result.error());
         } else {
             retryCounter.increment();

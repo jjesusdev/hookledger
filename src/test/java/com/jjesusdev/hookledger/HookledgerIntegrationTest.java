@@ -320,8 +320,8 @@ class HookledgerIntegrationTest {
     void deliveryAttemptsArePersistedAndExposedPerEvent() {
         ResponseEntity<IngestResponse> created = post("evt-delivery", BODY);
         UUID eventId = created.getBody().id();
-        deliveryRepository.record(eventId, 1, "http://target.test/hook", 200, DeliveryOutcome.DELIVERED, null);
-        deliveryRepository.record(eventId, 2, "http://target.test/hook", 503, DeliveryOutcome.RETRY, "HTTP 503");
+        deliveryRepository.record(eventId, "http://target.test/hook", 200, DeliveryOutcome.DELIVERED, null);
+        deliveryRepository.record(eventId, "http://target.test/hook", 503, DeliveryOutcome.RETRY, "HTTP 503");
 
         ResponseEntity<String> response = rest.getForEntity(
                 "/v1/events/" + eventId + "/deliveries", String.class);

@@ -69,7 +69,7 @@ class SqsWorkerTest {
         verify(sqs).deleteMessage(captor.capture());
         assertThat(captor.getValue().queueUrl()).isEqualTo(QUEUE_URL);
         assertThat(captor.getValue().receiptHandle()).isEqualTo("receipt-1");
-        verify(deliveryRepository).record(EVENT_ID, 1, TARGET_URL, 200, DeliveryOutcome.DELIVERED, null);
+        verify(deliveryRepository).record(EVENT_ID, TARGET_URL, 200, DeliveryOutcome.DELIVERED, null);
         verify(eventRepository).markDelivered(EVENT_ID);
     }
 
@@ -80,7 +80,7 @@ class SqsWorkerTest {
 
         worker.process(message("1"));
 
-        verify(deliveryRepository).record(EVENT_ID, 1, TARGET_URL, 503, DeliveryOutcome.RETRY,
+        verify(deliveryRepository).record(EVENT_ID, TARGET_URL, 503, DeliveryOutcome.RETRY,
                 "target returned HTTP 503");
         ArgumentCaptor<ChangeMessageVisibilityRequest> captor =
                 ArgumentCaptor.forClass(ChangeMessageVisibilityRequest.class);
@@ -97,7 +97,7 @@ class SqsWorkerTest {
 
         worker.process(message("3"));
 
-        verify(deliveryRepository).record(EVENT_ID, 3, TARGET_URL, 500, DeliveryOutcome.FAILED, "boom");
+        verify(deliveryRepository).record(EVENT_ID, TARGET_URL, 500, DeliveryOutcome.FAILED, "boom");
         verify(eventRepository).markFailed(EVENT_ID);
         verify(sqs, never()).deleteMessage(any(DeleteMessageRequest.class));
         verify(sqs, never()).changeMessageVisibility(any(ChangeMessageVisibilityRequest.class));

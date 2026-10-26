@@ -17,11 +17,10 @@ public class DeliveryRepository {
     }
 
     /**
-     * A visibility timeout can redeliver the same SQS message at the same attempt number.
-     * The unique constraint keeps the audit trail idempotent.
+     * The attempt is a per-event sequence, not the SQS receive count: a replay from the DLQ starts
+     * the broker count at 1 again, but the audit trail must keep growing.
      */
     public void record(UUID eventId,
-                       int attempt,
                        String target,
                        Integer statusCode,
                        DeliveryOutcome outcome,
@@ -29,12 +28,15 @@ public class DeliveryRepository {
         jdbc.sql("""
                         INSERT INTO delivery_attempt
                             (event_id, attempt, target, status_code, outcome, error)
-                        VALUES
-                            (:eventId, :attempt, :target, :statusCode, :outcome, :error)
+                        SELECT
+                            :eventId,
+                            (coalesce(max(attempt), 0) + 1)::int,
+                            :target, :statusCode, :outcome, :error
+                        FROM delivery_attempt
+                        WHERE event_id = :eventId
                         ON CONFLICT (event_id, attempt) DO NOTHING
                         """)
                 .param("eventId", eventId)
-                .param("attempt", attempt)
                 .param("target", truncate(target, 512))
                 .param("statusCode", statusCode)
                 .param("outcome", outcome.name())
