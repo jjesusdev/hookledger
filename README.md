@@ -173,6 +173,20 @@ No necesitas Docker: los tests levantan PostgreSQL embebido.
 mvn verify
 ```
 
+### Kubernetes (k3s)
+
+Los manifiestos están en `deploy/k8s`: 2 réplicas de la API, worker separado, probes, PDB, PostgreSQL
+con PVC y un Secret de plantilla. Se renderizan y validan en CI; **no hay clúster desplegado**.
+
+```bash
+kubectl kustomize deploy/k8s > /tmp/hookledger.yaml
+docker run --rm -v /tmp:/tmp ghcr.io/yannh/kubeconform:v0.8.0 \
+  -strict -summary -kubernetes-version 1.32.0 /tmp/hookledger.yaml
+```
+
+El detalle (Secret real, IRSA, límites del PostgreSQL in-cluster) está en
+[deploy/k8s/README.md](deploy/k8s/README.md).
+
 ## API
 
 | Método | Ruta | Descripción |

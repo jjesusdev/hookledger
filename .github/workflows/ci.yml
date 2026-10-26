@@ -564,6 +564,7 @@ jobs:
 
   postgres-down-smoke:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     needs: test
     env:
       COMPOSE_FILES: -f docker-compose.yml
@@ -590,17 +591,20 @@ jobs:
         run: |
           set -euo pipefail
           health=""
-          for attempt in $(seq 1 60); do
-            health="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
+          for attempt in $(seq 1 30); do
+            health="$(curl -s --max-time 15 --connect-timeout 3 \
+              -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
             if [ "${health}" = "503" ]; then
               echo "health is DOWN (503) after ${attempt} attempts"
               break
             fi
             sleep 2
           done
+          echo "last health code while the database was down: ${health}"
           [ "${health}" = "503" ]
 
-          liveness="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/liveness)"
+          liveness="$(curl -s --max-time 5 --connect-timeout 3 \
+            -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/liveness)"
           echo "liveness: ${liveness}"
           [ "${liveness}" = "200" ]
 
@@ -625,14 +629,16 @@ jobs:
           set -euo pipefail
           docker compose ${COMPOSE_FILES} start postgres
           health=""
-          for attempt in $(seq 1 90); do
-            health="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
+          for attempt in $(seq 1 60); do
+            health="$(curl -s --max-time 15 --connect-timeout 3 \
+              -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
             if [ "${health}" = "200" ]; then
               echo "health recovered after ${attempt} attempts"
               break
             fi
             sleep 2
           done
+          echo "last health code during recovery: ${health}"
           [ "${health}" = "200" ]
       - name: Ingest after recovery
         run: |

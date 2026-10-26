@@ -8,6 +8,9 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_SIZE:10}
       minimum-idle: 2
+      # Fail fast when the database is gone instead of making health checks wait 30s.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:5000}
+      validation-timeout: 2000
   flyway:
     enabled: true
   jackson:

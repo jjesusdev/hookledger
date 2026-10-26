@@ -344,13 +344,15 @@ docker compose down -v     # borra datos; solo en desarrollo
 docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
 ```
 
-## 11. Pendientes de operación (Semana 3)
+## 11. Pendientes de operación
 
 - Aplicar Terraform en AWS real (requiere región, credenciales y confirmación de costos).
-- Despliegue en k3s con límites de recursos y probes reales; GHCR para la imagen.
-- Grafana con ingesta, backlog del outbox, entregas y DLQ; alertas SLO.
-- Prueba de carga con k6 y escenarios de caos (worker kill, PostgreSQL caído, mensaje veneno).
-- Replay end-to-end contra LocalStack, no solo unit tests.
+- Desplegar los manifiestos de `deploy/k8s` en un clúster real y publicar la imagen en GHCR. Están
+  renderizados y validados con `kubeconform`, pero no desplegados.
+- Alertmanager con un receptor real (email, Slack o PagerDuty). Las reglas SLO ya se evalúan.
+- Carga sostenida sobre el camino de entrega (SQS + worker), no solo sobre la ingesta.
+- Chaos restante: worker muerto a mitad de una entrega, mensaje veneno real contra SQS y caída de
+  LocalStack/SQS.
 - Retención/archivado de `webhook_event`, `outbox_event` y `delivery_attempt`.
 - Rate limiting en `/v1/events` y en el endpoint de demo.
 - Runbook de caída de SQS: qué hacer si la cola no existe, si IAM falla o si la región está mal.
