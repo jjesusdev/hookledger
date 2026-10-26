@@ -266,6 +266,7 @@ Otras decisiones deliberadas:
 | SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
 | DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
 | Worker caído | job `worker-down-smoke` en CI | evento `PUBLISHED` esperando en SQS; al volver el worker, `DELIVERED` sin pérdida |
+| Mensaje veneno | job `poison-message-smoke` en CI | 3 receives de un body no-JSON → DLQ; worker vivo y el siguiente evento `DELIVERED` |
 | Carga de ingesta | job `load-smoke` en CI | 50 eventos/s por 30 s, mediana 1,7–2,7 ms, 0 fallos, outbox drenado |
 | Métricas y dashboard | job `observability-smoke` en CI | `promtool test rules` verde, gauges `hookledger_*` scrapeados, dashboard servido por Grafana |
 | PostgreSQL caído | job `postgres-down-smoke` en CI | health `503`, liveness `200`, ingesta `500`; reinicio → health `200` y evento aceptado |
@@ -283,6 +284,7 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 - [x] Semana 3 (parcial) — Prometheus + Grafana, dashboard provisionado y alertas SLO validadas con `promtool`.
 - [x] Semana 3 (parcial) — manifiestos k3s validados con `kubeconform`; sin clúster todavía.
 - [x] Semana 3 (parcial) — caos de PostgreSQL: falla cerrada y recuperación sin reiniciar la app.
+- [x] Semana 3 (parcial) — mensaje veneno: 3 receives, DLQ y worker vivo.
 - [ ] Semana 3 (resto) — GHCR, despliegue real, Alertmanager y demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 

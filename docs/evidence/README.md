@@ -25,8 +25,8 @@ BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094), 2026-10-26
-(commit `f80664d`):
+[40407782485](https://github.com/jjesusdev/hookledger/actions/runs/40407782485), 2026-10-26
+(commit `d480d3a`):
 
 | Job | Resultado |
 |---|---|
@@ -37,8 +37,9 @@ CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/wor
 | `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
 | `dlq-replay-smoke` | 3 fallos → DLQ → replay → `DELIVERED` con 4 intentos auditados |
 | `worker-down-smoke` | worker detenido → evento `PUBLISHED` en la cola → worker arriba → `DELIVERED` |
+| `poison-message-smoke` | mensaje no-JSON → 3 receives → DLQ; worker vivo y el siguiente evento `DELIVERED` |
 | `postgres-down-smoke` | PostgreSQL detenido → health `503`, liveness `200`, ingesta `500`; reinicio → health `200` y evento aceptado |
-| `load-smoke` | k6 50/s por 30 s: 1501 eventos, p95 4,29 ms, 0 fallos, outbox drenado |
+| `load-smoke` | k6 50/s por 30 s: 1501 eventos, p95 3,61 ms, 0 fallos, outbox drenado |
 | `observability-smoke` | `promtool` verde, gauges `hookledger_*`, 5 alertas cargadas, dashboard servido |
 | `k8s-manifests` | 10 recursos renderizados y validados con `kubeconform -strict` |
 
@@ -234,10 +235,11 @@ Job `load-smoke`: k6 envía eventos firmados a 50/s durante 30 s.
 | [40395265099](https://github.com/jjesusdev/hookledger/actions/runs/40395265099) | 1495 | 1,66 ms | 188,85 ms | 553,06 ms | 0 |
 | [40395986091](https://github.com/jjesusdev/hookledger/actions/runs/40395986091) | 1501 | 2,11 ms | 3,85 ms | 50,49 ms | 0 |
 | [40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094) | 1501 | 2,70 ms | 4,29 ms | 58,30 ms | 0 |
+| [40407782485](https://github.com/jjesusdev/hookledger/actions/runs/40407782485) | 1501 | 1,79 ms | 3,61 ms | 42,49 ms | 0 |
 
 En la primera, tercera y cuarta corrida el outbox drenó a 0 con `total=1501`. En la segunda el job falló
 **solo por el umbral de p95** que había quedado demasiado ajustado para un runner compartido; no hubo
-errores ni eventos perdidos. Las cuatro corridas tienen mediana entre 1,7 y 2,7 ms, así que el servicio
+errores ni eventos perdidos. Las cinco corridas tienen mediana entre 1,7 y 2,7 ms, así que el servicio
 no cambió: cambió la cola de scheduling del runner. El umbral quedó en p95 < 500 ms para detectar
 regresiones catastróficas sin convertir el job en una moneda al aire.
 
@@ -248,12 +250,13 @@ outbox, no la entrega externa.
 ### 14. Métricas, dashboard y alertas están aprovisionados
 
 Job `observability-smoke`, corrida
-[40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094):
+[40407782485](https://github.com/jjesusdev/hookledger/actions/runs/40407782485):
 
 ```text
 ingest counters scraped: accepted=1 duplicate=1
 outbox gauge scraped at 0
 hookledger_delivery_total
+hookledger_ingest_total
 hookledger_outbox_oldest_age_seconds
 hookledger_outbox_pending
 hookledger_outbox_published_total
@@ -264,6 +267,7 @@ HookledgerOutboxStalled
 HookledgerDeliveryFailureRate
 HookledgerIngest5xx
 dashboard ready after 1 attempts
+datasource healthy after 1 attempts
 Grafana datasource and dashboard are healthy
 ```
 
@@ -341,6 +345,37 @@ El mismo vector está cubierto del lado Java por `HmacTest` (incluido el vector 
 Además, `scripts/send-event.sh` se ejecutó contra un servidor de referencia que recalcula el HMAC: los
 tres casos (id automático, mismo id, `BODY` custom) llegaron con firma válida de 64 hex.
 
+### 18. Un mensaje veneno termina en la DLQ sin tumbar al worker
+
+Job `poison-message-smoke`: se publica `this is not json` directamente en la cola principal, sin pasar
+por la API.
+
+```text
+poison message reached the DLQ after 26 attempts
+main queue is empty
+main queue messages: 0
+malformed receives logged: 3
+worker is still alive
+ingest: {"id":"5e9e862e-…","status":"RECEIVED","duplicate":false}
+event delivered after the poison message: {"status":"DELIVERED",…}
+deliveries: [{"attempt":1,"statusCode":200,"outcome":"DELIVERED",…}]
+```
+
+El worker registra el mensaje como malformado, aplica el backoff y no borra la cola: al cuarto receive,
+la política de redrive (`maxReceiveCount=3`) lo mueve a la DLQ. La prueba además verifica que el poller
+sigue vivo (`/actuator/health/liveness`) y que un evento válido enviado después se entrega en el primer
+intento. Si el worker hubiera muerto con la excepción, el siguiente evento se habría quedado esperando.
+
+Reproducir localmente:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sqs.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.sqs.yml exec -T localstack \
+  awslocal sqs send-message \
+  --queue-url http://localhost:4566/000000000000/hookledger-events \
+  --message-body 'this is not json'
+```
+
 ## Lo que **no** está probado todavía
 
 Esto es tan importante como lo anterior:
@@ -354,8 +389,9 @@ Esto es tan importante como lo anterior:
   notificaciones (email, Slack, PagerDuty).
 - **Carga de entrega**: `load-smoke` mide la ingestión (50/s); no hay carga sostenida contra SQS y el
   worker, ni una prueba de saturación para encontrar el límite real.
-- **Chaos restante**: worker muerto a mitad de una entrega, mensaje veneno real contra SQS y caída de
-  LocalStack/SQS. La caída de PostgreSQL, la DLQ, el replay y el worker detenido ya están cubiertos.
+- **Chaos restante**: worker muerto a mitad de una entrega y caída de LocalStack/SQS. El mensaje
+  veneno ya está cubierto por `poison-message-smoke`; la caída de PostgreSQL, la DLQ, el replay y el
+  worker detenido también.
 - **Rotación de secretos**: documentada en el runbook, no automatizada.
 
 ## Cómo mantener esto honesto

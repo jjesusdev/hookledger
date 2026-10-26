@@ -351,8 +351,8 @@ docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
   renderizados y validados con `kubeconform`, pero no desplegados.
 - Alertmanager con un receptor real (email, Slack o PagerDuty). Las reglas SLO ya se evalúan.
 - Carga sostenida sobre el camino de entrega (SQS + worker), no solo sobre la ingesta.
-- Chaos restante: worker muerto a mitad de una entrega, mensaje veneno real contra SQS y caída de
-  LocalStack/SQS.
+- Chaos restante: worker muerto a mitad de una entrega y caída de LocalStack/SQS. El mensaje veneno
+  está cubierto por el job `poison-message-smoke`.
 - Retención/archivado de `webhook_event`, `outbox_event` y `delivery_attempt`.
 - Rate limiting en `/v1/events` y en el endpoint de demo.
 - Runbook de caída de SQS: qué hacer si la cola no existe, si IAM falla o si la región está mal.
