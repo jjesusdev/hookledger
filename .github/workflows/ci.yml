@@ -376,6 +376,55 @@ jobs:
         if: always()
         run: docker compose ${COMPOSE_FILES} down -v
 
+  load-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack
+        run: docker compose up -d --build
+      - name: Wait for health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "healthy after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not become healthy"
+          docker compose logs --no-color
+          exit 1
+      - name: Run the load test
+        run: |
+          docker run --rm --network host -v "${PWD}/load:/load:ro" \
+            -e BASE_URL=http://localhost:8080 \
+            -e RATE=50 -e DURATION=30s \
+            grafana/k6:2.3.0 run /load/ingest.js
+      - name: Wait for the outbox to drain
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            stats="$(curl -fsS http://localhost:8080/v1/stats)"
+            if echo "${stats}" | jq -e '.outboxPending == 0' >/dev/null; then
+              echo "stats: ${stats}"
+              echo "${stats}" | jq -e '.total >= 1500' >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "outbox did not drain after the load test"
+          curl -sS http://localhost:8080/v1/stats
+          docker compose logs --no-color
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
+
   terraform:
     runs-on: ubuntu-24.04
     defaults:

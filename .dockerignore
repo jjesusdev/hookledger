@@ -6,5 +6,6 @@ target
 *.md
 docs
 scripts
+load
 .env
 .env.*

@@ -26,3 +26,9 @@ logs:
 
 demo:
 	./scripts/send-event.sh
+
+load:
+	docker run --rm --network host -v "$(PWD)/load:/load:ro" \
+		-e BASE_URL=$${BASE_URL:-http://localhost:8080} \
+		-e RATE=$${RATE:-50} -e DURATION=$${DURATION:-30s} \
+		grafana/k6:2.3.0 run /load/ingest.js
