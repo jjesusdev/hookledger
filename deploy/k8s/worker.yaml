@@ -18,6 +18,10 @@ spec:
         app.kubernetes.io/name: hookledger
         app.kubernetes.io/component: worker
         app.kubernetes.io/part-of: hookledger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: /actuator/prometheus
     spec:
       serviceAccountName: hookledger
       terminationGracePeriodSeconds: 40

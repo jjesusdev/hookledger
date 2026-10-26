@@ -562,6 +562,95 @@ jobs:
           docker run --rm -v /tmp:/tmp ghcr.io/yannh/kubeconform:v0.8.0 \
             -strict -summary -kubernetes-version 1.32.0 /tmp/hookledger.yaml
 
+  postgres-down-smoke:
+    runs-on: ubuntu-24.04
+    needs: test
+    env:
+      COMPOSE_FILES: -f docker-compose.yml
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start the stack
+        run: docker compose ${COMPOSE_FILES} up -d --build
+      - name: Wait for health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | jq -e '.status == "UP"' >/dev/null; then
+              echo "healthy after ${attempt} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not become healthy"
+          docker compose ${COMPOSE_FILES} logs --no-color
+          exit 1
+      - name: Stop PostgreSQL
+        run: docker compose ${COMPOSE_FILES} stop postgres
+      - name: The API loses the database but stays alive
+        run: |
+          set -euo pipefail
+          health=""
+          for attempt in $(seq 1 60); do
+            health="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
+            if [ "${health}" = "503" ]; then
+              echo "health is DOWN (503) after ${attempt} attempts"
+              break
+            fi
+            sleep 2
+          done
+          [ "${health}" = "503" ]
+
+          liveness="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health/liveness)"
+          echo "liveness: ${liveness}"
+          [ "${liveness}" = "200" ]
+
+          timestamp="$(date +%s)"
+          body='{"type":"chaos.test"}'
+          signature="$(printf '%s.%s' "${timestamp}" "${body}" \
+            | openssl dgst -sha256 -hmac 'dev-secret' -hex | sed 's/^.*= //')"
+          ingest="$(curl -s -o /tmp/ingest.json -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-Hook-Source: demo' \
+            -H 'X-Hook-Id: postgres-down-1' \
+            -H 'X-Hook-Timestamp: '"${timestamp}" \
+            -H 'X-Hook-Signature: '"${signature}" \
+            --data-binary "${body}" \
+            http://localhost:8080/v1/events)"
+          echo "ingest while the database is down: ${ingest}"
+          cat /tmp/ingest.json
+          echo
+          [ "${ingest}" = "500" ]
+      - name: Restart PostgreSQL and wait for recovery
+        run: |
+          set -euo pipefail
+          docker compose ${COMPOSE_FILES} start postgres
+          health=""
+          for attempt in $(seq 1 90); do
+            health="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/health || true)"
+            if [ "${health}" = "200" ]; then
+              echo "health recovered after ${attempt} attempts"
+              break
+            fi
+            sleep 2
+          done
+          [ "${health}" = "200" ]
+      - name: Ingest after recovery
+        run: |
+          set -euo pipefail
+          response="$(./scripts/send-event.sh postgres-recovery-1)"
+          echo "ingest: ${response}"
+          echo "${response}" | jq -e '.duplicate == false' >/dev/null
+          event_id="$(echo "${response}" | jq -r .id)"
+          event="$(curl -fsS "http://localhost:8080/v1/events/${event_id}")"
+          echo "event: ${event}"
+          echo "${event}" | jq -e '.status == "RECEIVED" or .status == "PUBLISHED"' >/dev/null
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILES} logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILES} down -v
+
   terraform:
     runs-on: ubuntu-24.04
     defaults:
