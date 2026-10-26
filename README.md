@@ -238,6 +238,7 @@ Otras decisiones deliberadas:
 | SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
 | DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
 | Worker caído | job `worker-down-smoke` en CI | evento `PUBLISHED` esperando en SQS; al volver el worker, `DELIVERED` sin pérdida |
+| Carga de ingesta | job `load-smoke` en CI | 50 eventos/s por 30 s, p95 3,06 ms, 0 fallos, outbox drenado |
 | Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
@@ -248,7 +249,8 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 - [x] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform validado, LocalStack en CI.
 - [x] Semana 2 (extra) — DLQ + replay y worker caído end-to-end en CI; la demo pública queda pendiente de hosting.
 - [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
-- [ ] Semana 3 — k6 10k eventos, chaos restante (PostgreSQL caído), Grafana, alertas SLO, demo pública.
+- [x] Semana 3 (parcial) — k6 a 50 eventos/s con p95 3,06 ms y outbox drenado.
+- [ ] Semana 3 (resto) — chaos de PostgreSQL, Grafana, alertas SLO, demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 
 ## Seguridad

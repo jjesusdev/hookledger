@@ -38,9 +38,13 @@ docker run --rm --network host -v "$PWD/load:/load:ro" \
 | Métrica | Umbral | Por qué |
 |---|---|---|
 | `http_req_failed` | `< 1%` | un error de firma o de base es un fallo, no ruido |
-| `http_req_duration{p95}` | `< 300 ms` | la ingesta es una escritura corta, no un batch |
-| `http_req_duration{p99}` | `< 800 ms` | absorbe picos sin ocultar colas |
-| `hookledger_ingest_latency{p95}` | `< 300 ms` | misma señal, aislada del resto de requests |
+| `http_req_duration{p95}` | `< 50 ms` | la ingesta es una escritura corta, no un batch |
+| `http_req_duration{p99}` | `< 200 ms` | absorbe picos sin ocultar colas |
+| `hookledger_ingest_latency{p95}` | `< 50 ms` | misma señal, aislada del resto de requests |
+
+En la corrida base (50 rps, 30 s, runner de 4 vCPU) el p95 fue **3,06 ms** y el máximo **45,88 ms**;
+k6 no imprime el p99 en el resumen, pero el umbral lo evalúa. Los umbrales dejan margen para variación
+del runner sin aceptar una regresión de un orden de magnitud.
 
 ## Qué mide y qué no
 

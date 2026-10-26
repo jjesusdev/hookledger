@@ -37,6 +37,7 @@ CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/wor
 | `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
 | `dlq-replay-smoke` | 3 fallos → DLQ → replay → `DELIVERED` con 4 intentos auditados |
 | `worker-down-smoke` | worker detenido → evento `PUBLISHED` en la cola → worker arriba → `DELIVERED` |
+| `load-smoke` | k6 50/s por 30 s: 1501 eventos, p95 3,06 ms, 0 fallos, outbox drenado |
 
 ### Tests por clase
 
@@ -218,7 +219,24 @@ El evento no se perdió mientras no había consumidor; el outbox y la cola absor
 corrida [40393018221](https://github.com/jjesusdev/hookledger/actions/runs/40393018221), job
 `worker-down-smoke`.
 
-### 13. La firma del script coincide con el verificador
+### 13. Ingesta sostenida: 50 eventos por segundo con p95 de 3 ms
+
+Job `load-smoke`, corrida
+[40394469526](https://github.com/jjesusdev/hookledger/actions/runs/40394469526): k6 genera 1501
+eventos firmados en 30 s (50/s), sin duplicados ni errores.
+
+```text
+http_reqs......................: 1501   50.03/s
+http_req_duration..............: avg=2ms p(90)=2.56ms p(95)=3.06ms max=45.88ms
+http_req_failed................: 0.00%  0 out of 1501
+stats: {"total":1501,"received":0,"published":1501,"outboxPending":0}
+```
+
+Condiciones: runner de 4 vCPU, payloads de ~100 B, publisher de log y PostgreSQL en el mismo runner.
+No es un número de producción; es una línea base reproducible para detectar regresiones. La prueba
+mide la ingesta y el drenaje del outbox, no la entrega externa.
+
+### 14. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -240,7 +258,8 @@ Esto es tan importante como lo anterior:
   conectadas a SNS. El smoke test usa LocalStack `3.8.1`.
 - **Docker local**: el engine no corre en la máquina de desarrollo; los smoke tests viven en CI.
 - **k3s / GHCR / demo pública**: todavía no desplegados. No hay URL pública.
-- **Carga**: no hay prueba de throughput ni latencia. Llega en la Semana 3 con k6.
+- **Carga de entrega**: `load-smoke` mide la ingestión (50/s); no hay carga sostenida contra SQS y el
+  worker, ni una prueba de saturación para encontrar el límite real.
 - **Chaos**: caída de PostgreSQL y worker muerto a mitad de una entrega siguen sin prueba end-to-end.
   La DLQ, el replay y el worker detenido ya están cubiertos por `dlq-replay-smoke` y
   `worker-down-smoke`.

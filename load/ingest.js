@@ -25,8 +25,8 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ['rate<0.01'],
-    http_req_duration: ['p(95)<300', 'p(99)<800'],
-    hookledger_ingest_latency: ['p(95)<300'],
+    http_req_duration: ['p(95)<50', 'p(99)<200'],
+    hookledger_ingest_latency: ['p(95)<50'],
   },
 };
 
