@@ -32,7 +32,7 @@ Integrar pagos, WhatsApp, ERP o GitHub termina siempre en el mismo código frág
 
 `hookledger` concentra ese problema en un solo servicio con decisiones explícitas y verificables.
 
-## Qué hace hoy (Semana 2)
+## Qué hace hoy (Semana 3)
 
 - `POST /v1/events` con firma HMAC-SHA256 sobre `timestamp + "." + body`.
 - Ventana de reloj configurable (5 minutos por defecto) para limitar replay.
@@ -257,7 +257,7 @@ Otras decisiones deliberadas:
 
 | Claim | Cómo se reproduce | Resultado |
 |---|---|---|
-| Suite verde | `mvn -B -ntp verify` | 30 tests, 0 fallos (2026-10-26) |
+| Suite verde | `mvn -B -ntp verify` | 33 tests, 0 fallos (2026-10-26) |
 | Duplicados concurrentes | `HookledgerIntegrationTest.concurrentDuplicatesCreateOneEventAndOneOutboxRow` | 16 requests → 1 evento, 1 outbox |
 | Outbox sin doble claim | `HookledgerIntegrationTest.outboxPublisherClaimsEachRowExactlyOnceUnderConcurrency` | 100 filas, 2 publishers → `attempts = 1` en todas |
 | Demo con duplicados | `HookledgerIntegrationTest.demoBurstReportsAcceptedAndDuplicateEvents` | 20 únicos + 5 duplicados → 20 eventos |
@@ -266,8 +266,10 @@ Otras decisiones deliberadas:
 | SQS → worker → HTTP firmado | job `sqs-smoke` en CI | evento `DELIVERED` con un intento `DELIVERED` |
 | DLQ + replay | job `dlq-replay-smoke` en CI | 3 fallos → DLQ → replay → `DELIVERED`, 4 intentos auditados |
 | Worker caído | job `worker-down-smoke` en CI | evento `PUBLISHED` esperando en SQS; al volver el worker, `DELIVERED` sin pérdida |
-| Carga de ingesta | job `load-smoke` en CI | 50 eventos/s por 30 s, mediana ~1,7 ms, 0 fallos, outbox drenado |
+| Carga de ingesta | job `load-smoke` en CI | 50 eventos/s por 30 s, mediana 1,7–2,7 ms, 0 fallos, outbox drenado |
 | Métricas y dashboard | job `observability-smoke` en CI | `promtool test rules` verde, gauges `hookledger_*` scrapeados, dashboard servido por Grafana |
+| PostgreSQL caído | job `postgres-down-smoke` en CI | health `503`, liveness `200`, ingesta `500`; reinicio → health `200` y evento aceptado |
+| Manifiestos k3s | job `k8s-manifests` en CI | `kubectl kustomize` + `kubeconform -strict`: 10/10 recursos válidos |
 | Terraform | job `terraform` en CI | `fmt`, `init -backend=false` y `validate` verdes |
 
 El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
@@ -277,10 +279,11 @@ El detalle y las fechas viven en [docs/evidence](docs/evidence/README.md).
 - [x] Semana 1 — ingesta HMAC, idempotencia, outbox, tests, CI.
 - [x] Semana 2 — SQS + DLQ, worker con retries/backoff, replay, Terraform validado, LocalStack en CI.
 - [x] Semana 2 (extra) — DLQ + replay y worker caído end-to-end en CI; la demo pública queda pendiente de hosting.
-- [ ] Semana 2 (resto) — k3s, GHCR y despliegue real.
-- [x] Semana 3 (parcial) — k6 a 50 eventos/s, mediana ~1,7 ms y 0 fallos.
+- [x] Semana 3 (parcial) — k6 a 50 eventos/s, mediana 1,7–2,7 ms y 0 fallos.
 - [x] Semana 3 (parcial) — Prometheus + Grafana, dashboard provisionado y alertas SLO validadas con `promtool`.
-- [ ] Semana 3 (resto) — k3s/GHCR, chaos de PostgreSQL, demo pública.
+- [x] Semana 3 (parcial) — manifiestos k3s validados con `kubeconform`; sin clúster todavía.
+- [x] Semana 3 (parcial) — caos de PostgreSQL: falla cerrada y recuperación sin reiniciar la app.
+- [ ] Semana 3 (resto) — GHCR, despliegue real, Alertmanager y demo pública.
 - [ ] Post-MVP — migrar el webhook de MercadoPago de `erp-liveflow` a este servicio.
 
 ## Seguridad

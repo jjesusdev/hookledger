@@ -20,24 +20,27 @@ del proyecto es simple: si un claim no tiene un comando o un test detrás, no va
 
 ```
 mvn -B -ntp verify
-Tests run: 30, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 33, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
 CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/workflows/ci.yml). Corrida
-[40395986091](https://github.com/jjesusdev/hookledger/actions/runs/40395986091), 2026-10-26
-(commit `238108a`):
+[40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094), 2026-10-26
+(commit `f80664d`):
 
 | Job | Resultado |
 |---|---|
-| `test` | 30 tests, 0 fallos |
+| `test` | 33 tests, 0 fallos |
 | `terraform` | `fmt -check`, `init -backend=false`, `validate` verdes |
 | `build-image` | imagen Docker construida (sin push) |
 | `compose-smoke` | Postgres + app, health `UP`, evento aceptado, duplicado, outbox drenado |
 | `sqs-smoke` | LocalStack + SQS + worker → evento `DELIVERED` con intento `DELIVERED` |
 | `dlq-replay-smoke` | 3 fallos → DLQ → replay → `DELIVERED` con 4 intentos auditados |
 | `worker-down-smoke` | worker detenido → evento `PUBLISHED` en la cola → worker arriba → `DELIVERED` |
-| `load-smoke` | k6 50/s por 30 s: 1501 eventos, p95 3,06 ms, 0 fallos, outbox drenado |
+| `postgres-down-smoke` | PostgreSQL detenido → health `503`, liveness `200`, ingesta `500`; reinicio → health `200` y evento aceptado |
+| `load-smoke` | k6 50/s por 30 s: 1501 eventos, p95 4,29 ms, 0 fallos, outbox drenado |
+| `observability-smoke` | `promtool` verde, gauges `hookledger_*`, 5 alertas cargadas, dashboard servido |
+| `k8s-manifests` | 10 recursos renderizados y validados con `kubeconform -strict` |
 
 ### Tests por clase
 
@@ -49,6 +52,8 @@ CI público: [workflow `ci`](https://github.com/jjesusdev/hookledger/actions/wor
 | `DeliveryServiceTest` | 3 | firma sobre los bytes exactos, non-2xx como fallo, target ausente |
 | `SqsWorkerTest` | 5 | borra y marca `DELIVERED`, backoff 2 s y 4 s, último intento a DLQ, mensaje malformado |
 | `ReplayServiceTest` | 2 | mueve DLQ → cola principal, exige ambas URLs |
+| `DeliveryMetricsTest` | 1 | los contadores se registran aunque el worker esté apagado |
+| `OutboxHealthIndicatorTest` | 2 | `DOWN` en vez de excepción si la DB falla; backlog y edad del pendiente |
 
 ## Claims y su reproducción
 
@@ -228,18 +233,101 @@ Job `load-smoke`: k6 envía eventos firmados a 50/s durante 30 s.
 | [40394469526](https://github.com/jjesusdev/hookledger/actions/runs/40394469526) | 1501 | 1,78 ms | 3,06 ms | 45,88 ms | 0 |
 | [40395265099](https://github.com/jjesusdev/hookledger/actions/runs/40395265099) | 1495 | 1,66 ms | 188,85 ms | 553,06 ms | 0 |
 | [40395986091](https://github.com/jjesusdev/hookledger/actions/runs/40395986091) | 1501 | 2,11 ms | 3,85 ms | 50,49 ms | 0 |
+| [40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094) | 1501 | 2,70 ms | 4,29 ms | 58,30 ms | 0 |
 
-En la primera y tercera corrida el outbox drenó a 0 con `total=1501`. En la segunda el job falló
+En la primera, tercera y cuarta corrida el outbox drenó a 0 con `total=1501`. En la segunda el job falló
 **solo por el umbral de p95** que había quedado demasiado ajustado para un runner compartido; no hubo
-errores ni eventos perdidos. Las tres corridas tienen mediana entre 1,7 y 2,1 ms, así que el servicio no
-cambió: cambió la cola de scheduling del runner. El umbral quedó en p95 < 500 ms para detectar
+errores ni eventos perdidos. Las cuatro corridas tienen mediana entre 1,7 y 2,7 ms, así que el servicio
+no cambió: cambió la cola de scheduling del runner. El umbral quedó en p95 < 500 ms para detectar
 regresiones catastróficas sin convertir el job en una moneda al aire.
 
 Condiciones: runner de 4 vCPU, payloads de ~100 B, publisher de log y PostgreSQL en el mismo runner. No
 es un número de producción; es una línea base reproducible. La prueba mide la ingesta y el drenaje del
 outbox, no la entrega externa.
 
-### 14. La firma del script coincide con el verificador
+### 14. Métricas, dashboard y alertas están aprovisionados
+
+Job `observability-smoke`, corrida
+[40405907094](https://github.com/jjesusdev/hookledger/actions/runs/40405907094):
+
+```text
+ingest counters scraped: accepted=1 duplicate=1
+outbox gauge scraped at 0
+hookledger_delivery_total
+hookledger_outbox_oldest_age_seconds
+hookledger_outbox_pending
+hookledger_outbox_published_total
+hookledger_replay_total
+HookledgerTargetDown
+HookledgerOutboxBacklog
+HookledgerOutboxStalled
+HookledgerDeliveryFailureRate
+HookledgerIngest5xx
+dashboard ready after 1 attempts
+Grafana datasource and dashboard are healthy
+```
+
+El job valida, en este orden:
+
+1. `promtool check config` y `promtool test rules` sobre las reglas SLO (casos sintéticos de backlog,
+   outbox detenido, target caído y tasa de fallos).
+2. Que Prometheus scrapee `hookledger_ingest_total`, `hookledger_outbox_pending`,
+   `hookledger_outbox_oldest_age_seconds`, `hookledger_delivery_total` y `hookledger_replay_total`.
+3. Que el dashboard `hookledger-overview` (10 paneles) se sirva desde provisioning y que el datasource
+   Prometheus responda `OK`.
+
+Reproducir localmente:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d --build
+curl -s localhost:9090/api/v1/rules | jq '.data.groups[].rules[].name'
+curl -s -u admin:admin localhost:3000/api/dashboards/uid/hookledger-overview | jq '.dashboard.title'
+```
+
+Las alertas se evalúan, pero **no hay Alertmanager**: no salen notificaciones a ningún lado. Ese límite
+está en el runbook y en la sección final.
+
+### 15. Los manifiestos de k3s son válidos
+
+Job `k8s-manifests`:
+
+```text
+$ kubectl kustomize deploy/k8s | grep -c '^kind:'
+10
+$ kubeconform -strict -summary -kubernetes-version 1.32.0 /tmp/hookledger.yaml
+Summary: 10 resources found in 1 file - Valid: 10, Invalid: 0, Errors: 0, Skipped: 0
+```
+
+Incluye namespace, ServiceAccount sin token, ConfigMap, Secret de plantilla, PostgreSQL con PVC,
+Deployment de la API con 2 réplicas y probes, Deployment del worker, Service y PodDisruptionBudget.
+**No está desplegado**: no hay clúster ni Ingress. Ver `deploy/k8s/README.md`.
+
+### 16. PostgreSQL caído: la API falla cerrada y se recupera
+
+Job `postgres-down-smoke`: se detiene el contenedor de PostgreSQL con el stack arriba.
+
+```text
+health is DOWN (503) after 1 attempts
+liveness: 200
+ingest while the database is down: 500
+health recovered after 1 attempts
+ingest: {"id":"1c6a3b29-…","status":"RECEIVED","duplicate":false}
+event: {"status":"RECEIVED","externalId":"postgres-recovery-1",…}
+```
+
+Lectura:
+
+- El health agregado pasa a `503` y la sonda de liveness sigue en `200`: Kubernetes no reinicia el pod
+  por una dependencia caída.
+- La ingesta responde `500`, no un `200` mentiroso: sin base de datos no se confirma nada.
+- Al volver PostgreSQL, el pool de Hikari se recupera sin reiniciar la app y el siguiente evento se
+  acepta.
+
+La prueba encontró dos defectos reales: el health devolvía `500` porque `OutboxHealthIndicator`
+propagaba la excepción, y Hikari esperaba 30 s por conexión. Ahora el indicador reporta `DOWN` y el
+timeout es 5 s (`DB_CONNECTION_TIMEOUT_MS`), con tests en `OutboxHealthIndicatorTest`.
+
+### 17. La firma del script coincide con el verificador
 
 El script usa `openssl`, el servidor usa `javax.crypto.Mac`. Para comparar ambos caminos:
 
@@ -260,12 +348,14 @@ Esto es tan importante como lo anterior:
 - **AWS real**: Terraform está validado, no aplicado. No hay colas reales, ni IAM adjunto, ni alarmas
   conectadas a SNS. El smoke test usa LocalStack `3.8.1`.
 - **Docker local**: el engine no corre en la máquina de desarrollo; los smoke tests viven en CI.
-- **k3s / GHCR / demo pública**: todavía no desplegados. No hay URL pública.
+- **k3s / GHCR / demo pública**: los manifiestos se validan, pero no hay clúster ni imagen publicada.
+  Tampoco hay URL pública.
+- **Alertmanager**: las reglas SLO se evalúan y se ven en Prometheus/Grafana, pero no hay receptor de
+  notificaciones (email, Slack, PagerDuty).
 - **Carga de entrega**: `load-smoke` mide la ingestión (50/s); no hay carga sostenida contra SQS y el
   worker, ni una prueba de saturación para encontrar el límite real.
-- **Chaos**: caída de PostgreSQL y worker muerto a mitad de una entrega siguen sin prueba end-to-end.
-  La DLQ, el replay y el worker detenido ya están cubiertos por `dlq-replay-smoke` y
-  `worker-down-smoke`.
+- **Chaos restante**: worker muerto a mitad de una entrega, mensaje veneno real contra SQS y caída de
+  LocalStack/SQS. La caída de PostgreSQL, la DLQ, el replay y el worker detenido ya están cubiertos.
 - **Rotación de secretos**: documentada en el runbook, no automatizada.
 
 ## Cómo mantener esto honesto
